@@ -471,6 +471,30 @@ class Transport(unittest.TestCase):
                 self.assertIn(status,[400,403]);self.assertEqual(len(self.received),before)
                 event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
                 self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+                if case.get('body')==b'pwd=forbidden-sentinel&other=forbidden-sentinel' or case.get('path')=='/feedback/?q=forbidden-sentinel':
+                    self.assertIsNone(event['matches'][0]['exception_profile'])
+                    self.assertEqual(event['matches'][0]['unapplied_field_profiles'],['example-site'])
+    def test_21_unapplied_candidates_do_not_suppress_bans_or_change_observation(self):
+        body=b'pwd=forbidden-sentinel&other=forbidden-sentinel'
+        with self.alternate_proxy('partial-ban',exception=True,field=True,login=True,reliable=True) as (path,events):
+            before=len(self.received)
+            for _ in range(2):
+                self.assertEqual(self.request(path='/feedback/',body=body,socket_path=path,
+                    headers={'Content-Type':'application/x-www-form-urlencoded'})[0],403)
+            self.assertEqual(self.request(path='/feedback/',socket_path=path)[0],429)
+            self.assertEqual(len(self.received),before)
+            records=[json.loads(line) for line in events.read_text().splitlines()]
+            matched=[r for r in records if r['matches']]
+            self.assertEqual(sum(r['ban_started'] for r in matched),1)
+            self.assertTrue(all(r['matches'][0]['exception_profile'] is None and
+                r['matches'][0]['unapplied_field_profiles']==['example-site'] for r in matched))
+        with self.alternate_proxy('partial-observe',mode='observe',exception=True,field=True,login=True,reliable=True) as (path,events):
+            status,_,reply=self.request(path='/feedback/',body=body,socket_path=path,
+                headers={'Content-Type':'application/x-www-form-urlencoded'})
+            self.assertEqual(status,200);self.assertEqual(reply,body)
+            record=json.loads(events.read_text().splitlines()[-1])
+            self.assertEqual(record['decision'],'observe');self.assertFalse(record['ban_started'])
+            self.assertEqual(record['matches'][0]['unapplied_field_profiles'],['example-site'])
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

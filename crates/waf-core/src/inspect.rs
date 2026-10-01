@@ -2,7 +2,10 @@
 use crate::profile::{EffectivePolicy, PolicyError, Target};
 use bytes::Bytes;
 use regex::Regex;
-use regex_automata::nfa::thompson::{self, NFA};
+use regex_automata::{
+    Input,
+    nfa::thompson::{self, NFA, pikevm::PikeVM},
+};
 use serde::Serialize;
 use std::{
     borrow::Cow,
@@ -251,6 +254,9 @@ pub struct Match {
     pub profile_id: String,
     pub high_confidence: bool,
     pub exception_profile: Option<String>,
+    /// Qualified local field occurrences that did not suppress this rule.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unapplied_field_profiles: Vec<String>,
 }
 
 /// Completed syntax/normalization with body rule hits, never retained body values.
@@ -265,6 +271,7 @@ pub struct Inspector {
     rules: BTreeMap<String, Regex>,
     exceptions: Vec<Regex>,
     field_coverage: BTreeMap<String, NFA>,
+    field_search: BTreeMap<String, PikeVM>,
 }
 impl Inspector {
     pub async fn scan(
@@ -276,6 +283,7 @@ impl Inspector {
     ) -> Result<ScannedRequest> {
         let mut body_matches: BTreeMap<String, crate::field_coverage::Coverage> = BTreeMap::new();
         let mut coverage_caches = BTreeMap::new();
+        let mut field_search_caches = BTreeMap::new();
         let selected = self
             .policy
             .exceptions
@@ -290,7 +298,8 @@ impl Inspector {
             &selected,
             &mut |text, spans| {
                 for (id, entry) in &self.policy.rules {
-                    if !body_matches.get(id).is_some_and(|hit| hit.unscoped)
+                    if (!body_matches.get(id).is_some_and(|hit| hit.unscoped)
+                        || self.field_coverage.contains_key(id))
                         && entry
                             .rule
                             .targets
@@ -298,23 +307,49 @@ impl Inspector {
                             .any(|target| matches!(target, Target::Body))
                         && self.rules[id].is_match(text)
                     {
-                        let coverage = if let Some(nfa) = self.field_coverage.get(id) {
-                            let cache = coverage_caches
-                                .entry(id.clone())
-                                .or_insert_with(|| crate::field_coverage::Cache::new(nfa));
-                            let coverage = cache.scan(nfa, text, spans)?;
-                            if !coverage.unscoped && coverage.fields.is_empty() {
-                                return Err(error("field_coverage_disagreement"));
+                        let mut coverage = if let Some(nfa) = self.field_coverage.get(id) {
+                            if spans.is_empty()
+                                || body_matches.get(id).is_some_and(|hit| hit.unscoped)
+                            {
+                                crate::field_coverage::Coverage {
+                                    unscoped: true,
+                                    ..Default::default()
+                                }
+                            } else {
+                                let cache = coverage_caches
+                                    .entry(id.clone())
+                                    .or_insert_with(|| crate::field_coverage::Cache::new(nfa));
+                                let coverage = cache.scan(nfa, text, spans)?;
+                                if !coverage.unscoped && coverage.fields.is_empty() {
+                                    return Err(error("field_coverage_disagreement"));
+                                }
+                                coverage
                             }
-                            coverage
                         } else {
                             crate::field_coverage::Coverage {
-                                fields: BTreeSet::new(),
                                 unscoped: true,
+                                ..Default::default()
                             }
                         };
+                        if !spans.is_empty() {
+                            if let Some(matcher) = self.field_search.get(id) {
+                                let cache = field_search_caches
+                                    .entry(id.clone())
+                                    .or_insert_with(|| matcher.create_cache());
+                                // Preserve complete haystack context for anchors/boundaries.
+                                // Disjoint original spans keep total searched bytes bounded.
+                                for span in spans {
+                                    if matcher
+                                        .is_match(cache, Input::new(text).span(span.range.clone()))
+                                    {
+                                        coverage.candidates.insert(span.name.clone());
+                                    }
+                                }
+                            }
+                        }
                         let combined = body_matches.entry(id.clone()).or_default();
                         combined.fields.extend(coverage.fields);
+                        combined.candidates.extend(coverage.candidates);
                         combined.unscoped |= coverage.unscoped;
                     }
                 }
@@ -384,11 +419,20 @@ impl Inspector {
                 }
             }
         }
+        let field_search = field_coverage
+            .iter()
+            .map(|(id, nfa)| {
+                PikeVM::new_from_nfa(nfa.clone())
+                    .map(|matcher| (id.clone(), matcher))
+                    .map_err(|_| error("invalid_field_search_rule"))
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             policy,
             rules,
             exceptions,
             field_coverage,
+            field_search,
         })
     }
     pub fn inspect(&self, views: &Views, method: &str) -> Vec<Match> {
@@ -461,11 +505,30 @@ impl Inspector {
                                 .and_then(|scopes| scopes.first())
                                 .map(|(e, _)| e.profile_id.clone())
                         });
+                let unapplied_field_profiles = if exception_profile.is_none() {
+                    body_matches
+                        .get(id)
+                        .into_iter()
+                        .flat_map(|hit| &hit.candidates)
+                        .filter(|name| confirmed_fields.contains(&name.as_str()))
+                        .flat_map(|name| {
+                            eligible
+                                .iter()
+                                .filter(move |(e, _)| e.exception.form_field.as_ref() == Some(name))
+                        })
+                        .map(|(e, _)| e.profile_id.clone())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 Some(Match {
                     rule_id: id.clone(),
                     profile_id: entry.profile_id.clone(),
                     high_confidence: entry.rule.high_confidence,
                     exception_profile,
+                    unapplied_field_profiles,
                 })
             })
             .collect()

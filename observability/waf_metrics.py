@@ -45,6 +45,7 @@ def summarize(path, active=False):
     profiles = collections.Counter()
     policies = collections.Counter()
     exceptions = collections.Counter()
+    unapplied = collections.Counter()
     for event in events:
         for match in event['matches']:
             if not isinstance(match, dict):
@@ -57,12 +58,15 @@ def summarize(path, active=False):
                 profiles[match['profile_id']] += 1
             if isinstance(match.get('exception_profile'), str):
                 exceptions[match['exception_profile']] += 1
+            elif match.get('exception_profile') is None and isinstance(match.get('unapplied_field_profiles'), list):
+                for profile in set(value for value in match['unapplied_field_profiles'] if isinstance(value,str)):
+                    unapplied[profile] += 1
     return {'deployed': bool(active and events), 'service_active': active,
         'events_available': bool(events), 'events': len(events), 'max_retained_events': MAX_RECORDS,
         'rejected_lines': rejected, 'decisions': dict(collections.Counter(e['decision'] for e in events)),
         'reasons': dict(collections.Counter(e.get('reason', 'unknown') for e in events)),
         'fingerprints': dict(collections.Counter(e.get('fingerprint', 'unknown') for e in events)),
-        'rule_matches': dict(rules), 'policy_matches': dict(policies), 'profile_matches': dict(profiles), 'exceptions': dict(exceptions),
+        'rule_matches': dict(rules), 'policy_matches': dict(policies), 'profile_matches': dict(profiles), 'exceptions': dict(exceptions), 'unapplied_field_profiles': dict(unapplied),
         'ban_starts': sum(e.get('ban_started') is True for e in events),
         'ban_denials': sum(e.get('reason') in ('temporary_local_ban', 'temporary_local_ban_early') for e in events),
         'backend_attempts': sum(e.get('backend_attempted') is True for e in events),
@@ -74,9 +78,10 @@ def summarize(path, active=False):
 def block(waf):
     status = 'active, with decision events' if waf['deployed'] else 'unverified or inactive'
     groups = '<h3>Currently configured profiles</h3><table><tbody>' + ''.join('<tr>'+''.join('<td>'+html.escape(str(row[key]))+'</td>' for key in ['profile_id','version','layer'])+'</tr>' for row in waf.get('configured_profiles',[])) + '</tbody></table><p>Configured versions do not retroactively identify older event fingerprints.</p>'
-    for key, label in [('decisions','Decisions'),('reasons','Reasons'),('rule_matches','Rule matches'),('policy_matches','Policy matches'),('profile_matches','Profile matches'),('exceptions','Exceptions'),('fingerprints','Policy fingerprints')]:
+    for key, label in [('decisions','Decisions'),('reasons','Reasons'),('rule_matches','Rule matches'),('policy_matches','Policy matches'),('profile_matches','Profile matches'),('exceptions','Applied exceptions'),('unapplied_field_profiles','Unapplied qualified field candidates'),('fingerprints','Policy fingerprints')]:
         rows = ''.join('<tr><td>'+html.escape(str(k))+'</td><td>'+str(v)+'</td></tr>' for k,v in sorted(waf[key].items()))
         groups += '<h3>'+label+'</h3><table><tbody>'+rows+'</tbody></table>'
+    groups += '<p>Unapplied field candidates identify scoped, confirmed field occurrences in a rule that remains unexcepted. They do not suppress detections, forwarding denials or bans; counts are per rule/profile, not field values.</p>'
     return '<h2>Rust gateway</h2><p>Engine: '+status+'. Retained events: '+str(waf['events'])+'. Rejected event lines: '+str(waf['rejected_lines'])+'.</p><p>Gateway total duration: median '+str(waf['gateway_total_p50_ms'])+' ms; p95 '+str(waf['gateway_total_p95_ms'])+' ms. This includes backend time.</p><p>Ban starts: '+str(waf['ban_starts'])+'; ban denials: '+str(waf['ban_denials'])+'.</p><p>'+html.escape(waf['reason'])+'</p>'+groups
 
 if __name__ == '__main__':

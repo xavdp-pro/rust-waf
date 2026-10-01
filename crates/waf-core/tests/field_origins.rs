@@ -409,3 +409,79 @@ async fn fully_applied_exceptions_and_unmatched_fields_have_no_unapplied_candida
     assert!(hits[0].exception_profile.is_none());
     assert!(hits[0].unapplied_field_profiles.is_empty());
 }
+
+fn nested_inspector() -> Inspector {
+    let mut policy = inspector("needle").policy;
+    policy.exceptions[0].exception.form_field = Some("form[fields][1]".into());
+    Inspector::new(policy).unwrap()
+}
+
+#[tokio::test]
+async fn nested_leaf_origins_preserve_decoding_and_disjoint_sibling_arrays() {
+    let i = nested_inspector();
+    for body in [
+        "form[fields][1]=needle",
+        "%66orm%5Bfields%5D%5B1%5D=nee%2564le",
+        "form[fields][1]=needle&form[fields][2]=benign",
+        "form[fields][2][]=benign&form[fields][1]=needle",
+        "form[fields][1]=needle&other[]=benign",
+        "form[fields][1]=before%26form%5Bfields%5D%5B2%5D%3Dneedle",
+        "form[fields][01]=benign&form[fields][1]=needle",
+    ] {
+        let request = scan(&i, body).await;
+        let matches = i.inspect_scanned_with_fields(&request, "POST", &["form[fields][1]"]);
+        assert_eq!(matches.len(), 1, "{body}");
+        assert!(matches[0].exception_profile.is_some(), "{body}");
+        assert!(
+            i.inspect_scanned(&request, "POST")[0]
+                .exception_profile
+                .is_none()
+        );
+        assert!(
+            i.inspect_scanned_with_fields(&request, "GET", &["form[fields][1]"])[0]
+                .exception_profile
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn nested_alias_ancestor_descendant_and_sibling_hits_withhold_exceptions() {
+    let i = nested_inspector();
+    for body in [
+        "form[fields][1]=needle&form[fields][1]=benign",
+        "form[fields][1]=needle&%66orm%5Bfields%5D%5B1%5D=benign",
+        "form[fields][1]=needle&form[fields][1]",
+        "form[fields][1]&form[fields][1]=needle",
+        "form=benign&form[fields][1]=needle",
+        "form[fields][1]=needle&form=benign",
+        "form[fields]=benign&form[fields][1]=needle",
+        "form[fields][1]=needle&form[fields][1][child]=benign",
+        "form[fields][]=benign&form[fields][1]=needle",
+        "form[fields][1]=needle&form[fields][1][]",
+        "form[fields][1]=needle&form[fields][1]ignored=benign",
+        "form[fields][1]=needle&form[fields][2]=needle",
+        "%2566orm[fields][1]=needle",
+        "form[fields][01]=needle",
+    ] {
+        let matches =
+            i.inspect_scanned_with_fields(&scan(&i, body).await, "POST", &["form[fields][1]"]);
+        assert_eq!(matches.len(), 1, "{body}");
+        assert!(matches[0].exception_profile.is_none(), "{body}");
+    }
+    let body = "form[fields][1]=needle&".to_owned() + &"other".repeat(50) + "=benign";
+    let request = i
+        .scan(
+            "/form/",
+            "",
+            "application/x-www-form-urlencoded",
+            Bytes::from(body),
+        )
+        .await
+        .unwrap();
+    assert!(
+        i.inspect_scanned_with_fields(&request, "POST", &["form[fields][1]"])[0]
+            .exception_profile
+            .is_none()
+    );
+}

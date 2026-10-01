@@ -176,7 +176,7 @@ class Transport(unittest.TestCase):
             site=json.loads((ROOT/'profiles/sites/example.json').read_text())
             if exception:
                 site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
-                if field:site['exceptions'][0]['form_field']='pwd' if login else 'secret'
+                if field:site['exceptions'][0]['form_field']='pwd' if login else field if isinstance(field,str) else 'secret'
             if wordpress:
                 site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'method_rules':[
                     {'id':'fixture.rest-read','scope':'rest','pattern':'^/fixture/v1/read-only$','methods':['GET'],'evidence':'fictional-rest-read-workflow'},
@@ -495,6 +495,22 @@ class Transport(unittest.TestCase):
             record=json.loads(events.read_text().splitlines()[-1])
             self.assertEqual(record['decision'],'observe');self.assertFalse(record['ban_started'])
             self.assertEqual(record['matches'][0]['unapplied_field_profiles'],['example-site'])
+    def test_22_nested_field_configuration_never_invents_confirmation(self):
+        with self.alternate_proxy('nested-unconfirmed',exception=True,field='form[fields][1]') as (path,events):
+            for body in [b'form[fields][1]=forbidden-sentinel',
+                         b'%66orm%5Bfields%5D%5B1%5D=forbidden-sentinel',
+                         b'form[fields][1]=forbidden-sentinel&form[fields][2][]=benign',
+                         b'form=benign&form[fields][1]=forbidden-sentinel']:
+                before=len(self.received)
+                status,headers,_=self.request(path='/feedback/',body=body,socket_path=path,
+                    headers={'Content-Type':'application/x-www-form-urlencoded','X-Waf-Confirmed-Field':'form[fields][1]'})
+                self.assertEqual(status,403)
+                self.assertEqual(len(self.received),before)
+                event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted'])
+                self.assertIsNone(event['matches'][0]['exception_profile'])
+                self.assertNotIn('unapplied_field_profiles',event['matches'][0])
+
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

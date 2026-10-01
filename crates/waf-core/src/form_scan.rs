@@ -1,5 +1,6 @@
 //! Original form-value spans retained through whole-body decoding, never retokenized.
 use crate::{
+    form_path::FormPath,
     inspect::{decode_once, needs_decode, scan_variants},
     profile::PolicyError,
 };
@@ -27,28 +28,53 @@ pub(crate) fn scan(
     // Only configured names occupy metadata. Arbitrarily many other parameters
     // cannot allocate a per-parameter map. A duplicate removes that binding.
     let mut bindings: BTreeMap<&str, Option<Range<usize>>> = BTreeMap::new();
+    let paths = selected
+        .iter()
+        .map(|name| {
+            FormPath::parse(name)
+                .map(|path| (*name, path))
+                .ok_or_else(|| PolicyError("invalid_form_selector".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut offset = 0;
     for pair in input.split('&') {
-        if let Some((key, value)) = pair.split_once('=') {
-            // A <=64-byte ASCII selector needs at most 192 encoded name bytes.
-            if key.len() <= 192 {
-                let decoded = decode_once(key, true, true)?;
-                if let Some(name) = selected.get(decoded.as_str()) {
-                    let start = offset + key.len() + 1;
+        let (key, value) = pair
+            .split_once('=')
+            .map_or((pair, None), |(key, value)| (key, Some(value)));
+        // A <=64-byte ASCII selector needs at most 192 encoded name bytes.
+        if key.len() <= 192 {
+            let decoded = decode_once(key, true, true)?;
+            let candidate = FormPath::canonical_prefix(&decoded);
+            let raw_root = decoded.split('[').next().unwrap_or("");
+            for (name, path) in &paths {
+                if *name == decoded {
+                    let range = value.map(|value| {
+                        let start = offset + key.len() + 1;
+                        start..start + value.len()
+                    });
                     bindings
                         .entry(name)
-                        .and_modify(|range| *range = None)
-                        .or_insert(Some(start..start + value.len()));
+                        .and_modify(|old| *old = None)
+                        .or_insert(range);
+                } else if candidate
+                    .as_ref()
+                    .map_or(raw_root == path.root(), |candidate| {
+                        candidate.is_prefix_of(path) || path.is_prefix_of(candidate)
+                    })
+                {
+                    // Ancestor/descendant writes or malformed related paths
+                    // can replace a scalar or array branch in either order.
+                    bindings.insert(name, None);
                 }
             }
-        } else if pair.len() <= 192 {
-            let decoded = decode_once(pair, true, true)?;
-            if let Some(name) = selected.get(decoded.as_str()) {
-                // PHP/other parsers can consume a valueless duplicate as empty.
-                bindings
-                    .entry(name)
-                    .and_modify(|range| *range = None)
-                    .or_insert(None);
+        } else {
+            // Never parse or retain arbitrary-length names. An unclassified
+            // name cannot share a selected nested tree without withholding
+            // its exception. Legacy scalar selection remains unchanged.
+            for (name, path) in &paths {
+                if path.segments().len() > 1 {
+                    bindings.insert(name, None);
+                }
             }
         }
         offset += pair.len() + 1;

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "profile_id": "core-base",
+  "layer": "core",
+  "version": "0.1.0-design",
+  "extends": null,
+  "status": "design-only",
+  "invariants": [
+    "deny_dynamic_forwarding_on_engine_failure",
+    "trusted_ingress_identity_only",
+    "bounded_request_parsing",
+    "no_public_backend_bypass",
+    "application_authentication_remains_required"
+  ],
+  "ui": {
+    "mode": "statistics-only",
+    "read_only": true,
+    "controls": false
+  },
+  "cloudflare": {
+    "per_request_api_calls": false,
+    "per_detection_api_calls": false
+  }
+}

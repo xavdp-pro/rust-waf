@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "profile_id": "wordpress-base",
+  "layer": "wordpress",
+  "version": "0.1.0-design",
+  "extends": "core-base",
+  "status": "design-only",
+  "route_families": [
+    "rest",
+    "ajax",
+    "member_login",
+    "uploads",
+    "administration"
+  ],
+  "qualification": "declared_routes_and_actual_workflows_required",
+  "optional_plugin_modules": []
+}

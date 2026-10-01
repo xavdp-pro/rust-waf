@@ -26,7 +26,7 @@ use tokio::{
 };
 use waf_core::{
     ban::{BanConfig, BanTable},
-    inspect::{Inspector, normalize, normalize_headers},
+    inspect::{Inspector, normalize_headers},
     profile::{Profile, compose},
 };
 
@@ -255,14 +255,15 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         .ok()
         .flatten()
         .unwrap_or("");
-    let mut views = match normalize(
-        &app.inspector.policy,
-        parts.uri.path(),
-        parts.uri.query().unwrap_or(""),
-        content_type,
-        body.clone(),
-    )
-    .await
+    let mut scanned = match app
+        .inspector
+        .scan(
+            parts.uri.path(),
+            parts.uri.query().unwrap_or(""),
+            content_type,
+            body.clone(),
+        )
+        .await
     {
         Ok(v) => v,
         Err(e) => return deny(StatusCode::BAD_REQUEST, &e.0),
@@ -276,7 +277,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         Ok(h) => h,
         Err(_) => return deny(StatusCode::BAD_REQUEST, "invalid_header_text"),
     };
-    views.headers = match normalize_headers(&app.inspector.policy, &headers) {
+    scanned.views.headers = match normalize_headers(&app.inspector.policy, &headers) {
         Ok(h) => h,
         Err(e) => return deny(StatusCode::BAD_REQUEST, &e.0),
     };
@@ -325,9 +326,9 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let effective_method = context.as_ref().map_or(parts.method.as_str(), |context| {
         context.effective_method.as_str()
     });
-    let matches = app.inspector.inspect(&views, effective_method);
+    let matches = app.inspector.inspect_scanned(&scanned, effective_method);
     // Inspection is complete. Do not retain normalized bodies during backend I/O.
-    drop(views);
+    drop(scanned);
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());
     let records = serde_json::to_value(&matches).unwrap();
     if blocked && app.config.mode == Mode::Enforce {

@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Streaming body inspection
+
+The proxy now consumes normalized body views immediately into a bounded set of matching rule IDs rather than retaining body strings. All raw/decoded values remain inspected; rule provenance, effective-method exceptions, observation/enforcement and ban confidence are resolved after complete parsing. JSON uses a recursive visitor with per-object decoded-key equality checks and serde's depth bound, without building an AST or retaining array/scalar nodes. Original allowed bytes still forward unchanged. A detection cannot bypass validation of a later malformed suffix or duplicate key. Profile JSON retains its existing strict document parser.
+
+Three added Rust tests cover streamed/collected match equivalence, method/exception provenance, malformed JSON tails/escaped duplicates, large node arrays and encoded binary tails without retained body views. The workspace passes 31 Rust semantic/contract/inspection/ban cases and eighteen neutral-backend HTTP scenarios, including a new invalid-tail/valid-many-objects protocol case. Clippy, formatting, repository checks and scorer self-test pass. The single-request probe now defaults to this production scan path and adds repeated/unique string arrays and many-key objects. Per-object key sets, decoding buffers and multipart parsing still need actual concurrent resource evidence; no full acceptance claim follows from these tests.
+
 ## Normalization allocation checkpoint
 
 Owned normalization now avoids duplicate raw text/form views and repeated JSON-string clones, skips unnecessary decoding buffers and releases inspection views before backend I/O. Two added complete-body tests pass alongside the existing semantic/contract/ban suite and seventeen neutral-backend HTTP scenarios. Local six-case baseline/optimized single-process RSS observations and reproduction are in [normalization resources](normalization-resources.md). They establish allocation reductions only; JSON node amplification and concurrent gateway resource acceptance remain unresolved. No inspection scope, profile limit or acceptance threshold was reduced.

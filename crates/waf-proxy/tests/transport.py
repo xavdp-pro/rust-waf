@@ -346,6 +346,19 @@ class Transport(unittest.TestCase):
             sock.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nX-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nContent-Length: 1000000\r\n\r\n')
             self.assertIn(b'400',sock.recv(8192).split(b'\r\n')[0]);sock.close()
             self.assertEqual(len(self.received),before)
+    def test_17_json_detection_cannot_skip_invalid_tail_or_duplicate_key(self):
+        for body in [br'{"x":"forbidden-sentinel"} trailing',
+                     br'{"x":"forbidden-sentinel","tail":[1,]}',
+                     br'{"nested":{"a":0,"\u0061":1}}']:
+            self.assertEqual(self.assert_denied_before_backend(body=body,
+                headers={'Content-Type':'application/json'}),400)
+        # Distinct nested objects may use the same key. Verify original bytes reach
+        # the backend after full validation, including all otherwise empty nodes.
+        body=b'['+b'{"same":0},'*1200+b'{"same":1}]'
+        status,headers,reply=self.request(body=body,headers={'Content-Type':'application/json'})
+        self.assertEqual(status,200);self.assertEqual(reply,body)
+        self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(body).hexdigest())
+        self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

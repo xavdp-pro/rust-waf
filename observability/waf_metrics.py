@@ -64,7 +64,7 @@ def summarize(path, active=False):
         'fingerprints': dict(collections.Counter(e.get('fingerprint', 'unknown') for e in events)),
         'rule_matches': dict(rules), 'policy_matches': dict(policies), 'profile_matches': dict(profiles), 'exceptions': dict(exceptions),
         'ban_starts': sum(e.get('ban_started') is True for e in events),
-        'ban_denials': sum(e.get('reason') == 'temporary_local_ban' for e in events),
+        'ban_denials': sum(e.get('reason') in ('temporary_local_ban', 'temporary_local_ban_early') for e in events),
         'backend_attempts': sum(e.get('backend_attempted') is True for e in events),
         'gateway_total_p50_ms': percentile([e['elapsed_us']/1000 for e in events], .5),
         'gateway_total_p95_ms': percentile([e['elapsed_us']/1000 for e in events], .95),

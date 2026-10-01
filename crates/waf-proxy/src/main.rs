@@ -1,6 +1,6 @@
 //! Private-socket HTTP gateway. The backend URI always uses a fixed destination.
+mod ingress;
 use axum::{
-    Router,
     body::{Body, to_bytes},
     extract::{Request, State},
     response::Response,
@@ -14,15 +14,17 @@ use std::{
     env, fs,
     io::{self, Write},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
+    io::AsyncWriteExt,
     net::{UnixListener, UnixStream},
     sync::Semaphore,
     time::timeout,
 };
 use waf_core::{
+    ban::{BanConfig, BanTable},
     inspect::{Inspector, normalize, normalize_headers},
     profile::{Profile, compose},
 };
@@ -45,11 +47,14 @@ struct Config {
     request_timeout_seconds: u64,
     backend_timeout_seconds: u64,
     response_bytes: usize,
+    #[serde(default)]
+    bans: BanConfig,
 }
 struct App {
     inspector: Inspector,
     config: Config,
     semaphore: Semaphore,
+    bans: Mutex<BanTable>,
 }
 fn one<'a>(headers: &'a HeaderMap, key: &str) -> Result<Option<&'a str>, &'static str> {
     let mut values = headers.get_all(key).iter();
@@ -90,6 +95,7 @@ struct Evidence<'a> {
     reason: &'a str,
     matches: serde_json::Value,
     backend_attempted: bool,
+    ban_started: bool,
 }
 fn finish(
     app: &App,
@@ -105,10 +111,11 @@ fn finish(
         reason,
         matches,
         backend_attempted,
+        ban_started,
     } = evidence;
     let event = serde_json::json!({"schema_version":1,"ts_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
         "request_id":id,"fingerprint":app.inspector.policy.fingerprint,"decision":decision,"reason":reason,"matches":matches,
-        "status":status.as_u16(),"elapsed_us":start.elapsed().as_micros(),"backend_attempted":backend_attempted});
+        "status":status.as_u16(),"elapsed_us":start.elapsed().as_micros(),"backend_attempted":backend_attempted,"ban_started":ban_started});
     let write_result = writeln!(io::stdout().lock(), "{event}");
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = if write_result.is_ok() {
@@ -137,6 +144,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 reason,
                 matches: serde_json::json!([]),
                 backend_attempted: false,
+                ban_started: false,
             },
             Bytes::from_static(b"Request denied\n"),
             HeaderMap::new(),
@@ -187,6 +195,20 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         Some("0" | "1")
     ) {
         return deny(StatusCode::BAD_REQUEST, "missing_trusted_access_flag");
+    }
+    let client_ip: std::net::IpAddr = client_ip.unwrap().parse().unwrap();
+    let trusted = one(&parts.headers, "x-waf-admin-friend").ok().flatten() == Some("1");
+    let remaining = match app.bans.lock() {
+        Ok(table) => table.remaining(client_ip, trusted, Instant::now()),
+        Err(_) => return deny(StatusCode::SERVICE_UNAVAILABLE, "ban_state_unavailable"),
+    };
+    if let Some(duration) = remaining {
+        let mut response = deny(StatusCode::TOO_MANY_REQUESTS, "temporary_local_ban");
+        response.headers_mut().insert(
+            "retry-after",
+            HeaderValue::from_str(&duration.as_secs().saturating_add(1).to_string()).unwrap(),
+        );
+        return response;
     }
     if parts.headers.contains_key("upgrade") || parts.headers.contains_key("expect") {
         return deny(StatusCode::BAD_REQUEST, "unsupported_transport_feature");
@@ -255,6 +277,17 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());
     let records = serde_json::to_value(&matches).unwrap();
     if blocked && app.config.mode == Mode::Enforce {
+        let reliable = matches
+            .iter()
+            .any(|m| m.high_confidence && m.exception_profile.is_none());
+        let ban_started = if reliable {
+            match app.bans.lock() {
+                Ok(mut table) => table.record_reliable(client_ip, trusted, Instant::now()),
+                Err(_) => return deny(StatusCode::SERVICE_UNAVAILABLE, "ban_state_unavailable"),
+            }
+        } else {
+            false
+        };
         return finish(
             &app,
             &id,
@@ -265,6 +298,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 reason: "rule_match",
                 matches: records,
                 backend_attempted: false,
+                ban_started,
             },
             Bytes::from_static(b"Request denied\n"),
             HeaderMap::new(),
@@ -343,6 +377,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 reason: "inspected",
                 matches: records,
                 backend_attempted: true,
+                ban_started: false,
             },
             body,
             headers,
@@ -357,6 +392,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 reason: "backend_unavailable_or_response_limit",
                 matches: records,
                 backend_attempted: true,
+                ban_started: false,
             },
             Bytes::from_static(b"Backend unavailable\n"),
             HeaderMap::new(),
@@ -393,15 +429,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = UnixListener::bind(&config.listen_socket)?;
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&config.listen_socket, fs::Permissions::from_mode(0o660))?;
+    let bans = Mutex::new(BanTable::new(config.bans.clone())?);
     let app = Arc::new(App {
+        bans,
         semaphore: Semaphore::new(config.max_concurrent),
         config,
         inspector,
     });
-    axum::serve(listener, Router::new().fallback(handle).with_state(app))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    let connections = Arc::new(Semaphore::new(app.config.max_concurrent));
+    loop {
+        let (mut stream, _) = tokio::select! {
+            result = listener.accept() => result?,
+            _ = tokio::signal::ctrl_c() => break,
+        };
+        let app = app.clone();
+        let Ok(permit) = connections.clone().try_acquire_owned() else {
+            // Do not spawn unbounded denial tasks while the connection budget is full.
+            drop(stream);
+            continue;
+        };
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            let validation = ingress::validate(
+                &mut stream,
+                app.inspector.policy.limits.header_bytes,
+                app.inspector.policy.limits.header_count,
+                app.config.request_timeout_seconds,
+            )
+            .await;
+            let prefix = match validation {
+                Ok(prefix) => prefix,
+                Err(error) => {
+                    let response = finish(
+                        &app,
+                        &id,
+                        start,
+                        error.status,
+                        Evidence {
+                            decision: "block",
+                            reason: error.reason,
+                            matches: serde_json::json!([]),
+                            backend_attempted: false,
+                            ban_started: false,
+                        },
+                        Bytes::from_static(b"Request denied\n"),
+                        HeaderMap::new(),
+                    );
+                    let (parts, body) = response.into_parts();
+                    let body = to_bytes(body, 1024).await.unwrap_or_default();
+                    let head = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\nX-Request-ID: {}\r\n\r\n",
+                        parts.status.as_u16(),
+                        parts.status.canonical_reason().unwrap_or("Denied"),
+                        body.len(),
+                        id
+                    );
+                    let _ = timeout(Duration::from_secs(1), async {
+                        stream.write_all(head.as_bytes()).await?;
+                        stream.write_all(&body).await
+                    })
+                    .await;
+                    return;
+                }
+            };
+            let _permit = permit;
+            let connection_seconds =
+                app.config.request_timeout_seconds + app.config.backend_timeout_seconds + 30;
+            let service = hyper::service::service_fn(
+                move |request: hyper::Request<hyper::body::Incoming>| {
+                    let app = app.clone();
+                    async move {
+                        Ok::<_, std::convert::Infallible>(
+                            handle(State(app), request.map(Body::new)).await,
+                        )
+                    }
+                },
+            );
+            // Exactly one request per connection keeps raw-header validation complete.
+            let connection = hyper::server::conn::http1::Builder::new()
+                .keep_alive(false)
+                .serve_connection(TokioIo::new(ingress::replay(stream, prefix)), service);
+            let _ = timeout(Duration::from_secs(connection_seconds), connection).await;
+        });
+    }
     Ok(())
 }

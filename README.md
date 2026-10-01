@@ -42,4 +42,4 @@ python3 tools/check_repository.py
 python3 observability/evaluate_waf.py --self-test
 ```
 
-These Python commands check the foundation and a synthetic scoring fixture. Run `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` to verify Rust composition. The examples parse and compose but have no protection rules. No hosted CI or scheduled automation is enabled.
+These Python commands check the foundation and a synthetic scoring fixture. Run `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` to verify Rust composition. The core includes initial unqualified protection patterns; WordPress/site examples still need specialization and qualification. No hosted CI or scheduled automation is enabled.

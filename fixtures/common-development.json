@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "provenance": "Manually labeled fictional development examples authored by the implementation agent. This is not the independently labeled acceptance corpus.",
+  "cases": [
+    {
+      "id": "union-select",
+      "label": "malicious",
+      "rationale": "Attempt to append a SQL selection",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "1 UNION SELECT password FROM accounts",
+      "headers": {}
+    },
+    {
+      "id": "union-all-comment",
+      "label": "malicious",
+      "rationale": "Comment-separated SQL union payload",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "1 UNION/**/ALL/**/SELECT secret FROM accounts",
+      "headers": {}
+    },
+    {
+      "id": "time-sleep",
+      "label": "malicious",
+      "rationale": "Database delay injection expression",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "1 OR sleep(5)",
+      "headers": {}
+    },
+    {
+      "id": "time-benchmark",
+      "label": "malicious",
+      "rationale": "Database computation delay expression",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "benchmark(100000,md5(1))",
+      "headers": {}
+    },
+    {
+      "id": "script-element",
+      "label": "malicious",
+      "rationale": "Executable script submission to a plain feedback field",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "<script>alert(1)</script>",
+      "headers": {}
+    },
+    {
+      "id": "script-mixed-case",
+      "label": "malicious",
+      "rationale": "Executable external script element",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "<ScRiPt src=\"https://attacker.example/x\"></sCrIpT>",
+      "headers": {}
+    },
+    {
+      "id": "javascript-scheme",
+      "label": "malicious",
+      "rationale": "Active script URL submission",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "javascript:alert(1)",
+      "headers": {}
+    },
+    {
+      "id": "php-tag",
+      "label": "malicious",
+      "rationale": "Executable PHP submission to a plain field",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "<?php system(\"id\"); ?>",
+      "headers": {}
+    },
+    {
+      "id": "php-short-echo",
+      "label": "malicious",
+      "rationale": "Executable PHP short echo payload",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "<?= system(\"id\") ?>",
+      "headers": {}
+    },
+    {
+      "id": "traversal-unix",
+      "label": "malicious",
+      "rationale": "Parent-directory file traversal",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "../../etc/passwd",
+      "headers": {}
+    },
+    {
+      "id": "traversal-windows",
+      "label": "malicious",
+      "rationale": "Windows parent-directory file traversal",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "..\\..\\private.ini",
+      "headers": {}
+    },
+    {
+      "id": "sensitive-file",
+      "label": "malicious",
+      "rationale": "Sensitive system credential file reference",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "/etc/shadow",
+      "headers": {}
+    },
+    {
+      "id": "proc-environ",
+      "label": "malicious",
+      "rationale": "Process environment file disclosure reference",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "/proc/self/environ",
+      "headers": {}
+    },
+    {
+      "id": "php-filter",
+      "label": "malicious",
+      "rationale": "PHP stream source disclosure wrapper",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "php://filter/convert.base64-encode/resource=index.php",
+      "headers": {}
+    },
+    {
+      "id": "query-encoded-union",
+      "label": "malicious",
+      "rationale": "URL-encoded SQL union expression",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "x=1%20UNION%20SELECT%20password%20FROM%20accounts",
+      "content_type": "text/plain",
+      "body": "",
+      "headers": {}
+    },
+    {
+      "id": "form-nested-script",
+      "label": "malicious",
+      "rationale": "Nested percent-encoded active script",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/x-www-form-urlencoded",
+      "body": "message=%253Cscript%253Ealert(1)%253C/script%253E",
+      "headers": {}
+    },
+    {
+      "id": "json-escaped-script",
+      "label": "malicious",
+      "rationale": "JSON Unicode-escaped active script",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/problem+json",
+      "body": "{\"message\":\"\\u003cscript>alert(1)\\u003c/script>\"}",
+      "headers": {}
+    },
+    {
+      "id": "header-script",
+      "label": "malicious",
+      "rationale": "Active payload in an application-consumed fixture header",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "",
+      "headers": {
+        "X-Fixture-Comment": "<script>alert(1)</script>"
+      }
+    },
+    {
+      "id": "plain-feedback",
+      "label": "legitimate",
+      "rationale": "Plain reader feedback",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "Thank you for the useful article.",
+      "headers": {}
+    },
+    {
+      "id": "punctuation",
+      "label": "legitimate",
+      "rationale": "Ordinary punctuation and percentage",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "A price of 20% is fine; use two + signs.",
+      "headers": {}
+    },
+    {
+      "id": "unicode-form",
+      "label": "legitimate",
+      "rationale": "UTF-8 form text and repeated PHP array fields",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/x-www-form-urlencoded",
+      "body": "message=Bonjour+%C3%A9t%C3%A9&items[]=one&items[]=two",
+      "headers": {}
+    },
+    {
+      "id": "json-cart",
+      "label": "legitimate",
+      "rationale": "Fictional cart quantity update",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/json",
+      "body": "{\"quantity\":2,\"product_id\":42}",
+      "headers": {}
+    },
+    {
+      "id": "json-plain-content",
+      "label": "legitimate",
+      "rationale": "Plain fictional article update",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/json",
+      "body": "{\"content\":\"A simple article\",\"title\":\"News\"}",
+      "headers": {}
+    },
+    {
+      "id": "safe-markup",
+      "label": "legitimate",
+      "rationale": "Non-active rich text",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/html",
+      "body": "<p>Hello <strong>reader</strong>.</p>",
+      "headers": {}
+    },
+    {
+      "id": "ordinary-union-word",
+      "label": "legitimate",
+      "rationale": "Natural-language sentence separated by a verb",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "The union will select a representative.",
+      "headers": {}
+    },
+    {
+      "id": "ordinary-sleep-word",
+      "label": "legitimate",
+      "rationale": "Natural-language use of a detection keyword",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "A good sleep improves concentration.",
+      "headers": {}
+    },
+    {
+      "id": "ordinary-path",
+      "label": "legitimate",
+      "rationale": "Relative asset reference without traversal",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "images/catalog/item.jpg",
+      "headers": {}
+    },
+    {
+      "id": "json-boolean",
+      "label": "legitimate",
+      "rationale": "Ordinary JSON values",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/json",
+      "body": "{\"enabled\":true,\"items\":[],\"note\":null}",
+      "headers": {}
+    },
+    {
+      "id": "form-password",
+      "label": "legitimate",
+      "rationale": "Fictional password with escaped separators",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "application/x-www-form-urlencoded",
+      "body": "password=A%2Bstrong%26fictional%3Dphrase",
+      "headers": {}
+    },
+    {
+      "id": "unicode-text",
+      "label": "legitimate",
+      "rationale": "Multilingual reader text",
+      "method": "POST",
+      "path": "/fixture/",
+      "query": "",
+      "content_type": "text/plain",
+      "body": "Un commentaire en français, 日本語, emoji 🙂.",
+      "headers": {}
+    }
+  ]
+}

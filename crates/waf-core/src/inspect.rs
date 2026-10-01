@@ -294,7 +294,6 @@ impl Inspector {
                 if !hit {
                     return None;
                 }
-                let path = views.path.last().unwrap();
                 let exception =
                     self.policy
                         .exceptions
@@ -303,7 +302,7 @@ impl Inspector {
                         .find(|(e, r)| {
                             e.exception.rule_id == *id
                                 && e.exception.methods.iter().any(|m| m == method)
-                                && r.is_match(path)
+                                && views.path.iter().all(|path| r.is_match(path))
                         });
                 Some(Match {
                     rule_id: id.clone(),

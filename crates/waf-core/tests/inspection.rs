@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use waf_core::{
     inspect::{Inspector, normalize},
-    profile::{Profile, Rule, Target, compose},
+    profile::{Exception, Profile, Rule, Target, compose},
 };
 fn inspector() -> Inspector {
     let mut profiles = [
@@ -17,6 +17,13 @@ fn inspector() -> Inspector {
         targets: vec![Target::Body, Target::Query],
         pattern: "forbidden-sentinel".into(),
         high_confidence: false,
+    });
+    profiles[2].exceptions.push(Exception {
+        rule_id: "fixture.sentinel".into(),
+        path_pattern: "^/public-search/$".into(),
+        methods: vec!["POST".into()],
+        reason: "Synthetic method-scoped compatibility test".into(),
+        evidence: "inspection-stream-comparison".into(),
     });
     Inspector::new(compose(profiles, "example-site").unwrap()).unwrap()
 }
@@ -215,4 +222,148 @@ async fn owned_json_and_multipart_views_preserve_keys_escapes_and_file_tail() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn streamed_matches_preserve_normalized_targets_methods_and_exception_provenance() {
+    let i = inspector();
+    let multipart = b"--fixture\r\nContent-Disposition: form-data; name=\"upload\"; filename=\"forbidden-sentinel.txt\"\r\n\r\n%2566orbidden-sentinel\r\n--fixture--\r\n";
+    for (media, body) in [
+        (
+            "application/json",
+            br#"{"%2566orbidden-sentinel":[0,true,null,{"safe":"ok"}]}"#.as_slice(),
+        ),
+        (
+            "application/json",
+            br#"{"safe":["%2566orbidden-sentinel","\u0066orbidden-sentinel"]}"#.as_slice(),
+        ),
+        (
+            "application/json",
+            br#"[null,true,false,1,-2,1.0,1e20,[],{},""]"#.as_slice(),
+        ),
+        ("application/json", b"".as_slice()),
+        ("text/plain", b"%2566orbidden-sentinel".as_slice()),
+        (
+            "application/octet-stream",
+            b"\xff%2566orbidden-sentinel".as_slice(),
+        ),
+        (
+            "application/x-www-form-urlencoded",
+            b"a=%2566orbidden-sentinel&items[]=one&items[]=two".as_slice(),
+        ),
+        (
+            "multipart/form-data; boundary=fixture",
+            multipart.as_slice(),
+        ),
+    ] {
+        for path in ["/fixture/", "/public-search/"] {
+            let views = normalize(
+                &i.policy,
+                path,
+                "x=%2566orbidden-sentinel",
+                media,
+                Bytes::copy_from_slice(body),
+            )
+            .await
+            .unwrap();
+            let scanned = i
+                .scan(
+                    path,
+                    "x=%2566orbidden-sentinel",
+                    media,
+                    Bytes::copy_from_slice(body),
+                )
+                .await
+                .unwrap();
+            assert!(scanned.views.body.is_empty());
+            for method in ["GET", "POST", "DELETE"] {
+                assert_eq!(
+                    serde_json::to_value(i.inspect(&views, method)).unwrap(),
+                    serde_json::to_value(i.inspect_scanned(&scanned, method)).unwrap()
+                );
+            }
+        }
+    }
+    let scanned = i
+        .scan(
+            "/public-search/",
+            "",
+            "application/json",
+            Bytes::from_static(br#"{"x":"forbidden-sentinel"}"#),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        i.inspect_scanned(&scanned, "POST")[0]
+            .exception_profile
+            .as_deref(),
+        Some("example-site")
+    );
+    assert!(
+        i.inspect_scanned(&scanned, "DELETE")[0]
+            .exception_profile
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn streamed_json_rejects_ambiguity_and_invalid_tail_after_a_detection() {
+    let i = inspector();
+    for body in [
+        br#"{"nested":{"a":1,"\u0061":2}}"#.as_slice(),
+        br#"{"x":"forbidden-sentinel","x":0}"#.as_slice(),
+        br#"{"x":"forbidden-sentinel"} trailing"#.as_slice(),
+        br#"{"x":"forbidden-sentinel","tail": [1,]}"#.as_slice(),
+        br#"{"x":"forbidden-sentinel","tail": "\ud800"}"#.as_slice(),
+        br#"[1e999]"#.as_slice(),
+        br#"{"x":"%2525252566orbidden-sentinel"}"#.as_slice(),
+    ] {
+        assert!(
+            i.scan(
+                "/fixture/",
+                "",
+                "application/json",
+                Bytes::copy_from_slice(body)
+            )
+            .await
+            .is_err()
+        );
+    }
+    let nested = "[".repeat(200) + "0" + &"]".repeat(200);
+    assert!(
+        i.scan("/fixture/", "", "application/json", Bytes::from(nested))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn streamed_large_json_and_binary_keep_tail_hits_without_retained_body_views() {
+    let i = inspector();
+    let mut json = b"[".to_vec();
+    for _ in 0..100_000 {
+        json.extend_from_slice(b"[\"\",null,0],");
+    }
+    json.extend_from_slice(br#"{"tail":"\u0066orbidden-sentinel"}]"#);
+    let scanned = i
+        .scan("/fixture/", "", "application/json", Bytes::from(json))
+        .await
+        .unwrap();
+    assert!(scanned.views.body.is_empty());
+    assert_eq!(i.inspect_scanned(&scanned, "POST").len(), 1);
+    let mut binary = vec![0xff; 8 * 1024 * 1024];
+    let tail = b"%2566orbidden-sentinel";
+    let start = binary.len() - tail.len();
+    binary[start..].copy_from_slice(tail);
+    let scanned = i
+        .scan(
+            "/fixture/",
+            "",
+            "application/octet-stream",
+            Bytes::from(binary),
+        )
+        .await
+        .unwrap();
+    assert!(scanned.views.body.is_empty());
+    assert_eq!(i.inspect_scanned(&scanned, "POST").len(), 1);
 }

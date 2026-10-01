@@ -3,7 +3,10 @@ use crate::profile::{EffectivePolicy, PolicyError, Target};
 use bytes::Bytes;
 use regex::Regex;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 type Result<T> = std::result::Result<T, PolicyError>;
 fn error(code: &str) -> PolicyError {
@@ -83,32 +86,57 @@ fn variants_owned(input: String, passes: usize, plus: bool, strict: bool) -> Res
     }
     Ok(views)
 }
-use crate::json::StrictJson;
-fn json_views(value: serde_json::Value, output: &mut Vec<String>, passes: usize) -> Result<()> {
-    match value {
-        serde_json::Value::String(s) => output.extend(variants_owned(s, passes, false, false)?),
-        serde_json::Value::Array(a) => {
-            for v in a {
-                json_views(v, output, passes)?;
-            }
+fn scan_variants(
+    input: &str,
+    passes: usize,
+    plus: bool,
+    strict: bool,
+    emit: &mut impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    emit(input)?;
+    let mut current = Cow::Borrowed(input);
+    for pass in 0..passes {
+        if !needs_decode(&current, plus && pass == 0) {
+            return Ok(());
         }
-        serde_json::Value::Object(o) => {
-            for (key, v) in o {
-                output.extend(variants_owned(key, passes, false, false)?);
-                json_views(v, output, passes)?;
-            }
+        let decoded = decode_once(&current, plus && pass == 0, strict && pass == 0)?;
+        if decoded == current {
+            return Ok(());
         }
-        _ => {}
+        emit(&decoded)?;
+        current = Cow::Owned(decoded);
+    }
+    if needs_decode(&current, false) && decode_once(&current, false, false)? != current {
+        return Err(error("encoding_depth_exceeded"));
     }
     Ok(())
 }
 
+/// Collect views for diagnostics/tests. The proxy uses Inspector::scan instead.
 pub async fn normalize(
     policy: &EffectivePolicy,
     path: &str,
     query: &str,
     content_type: &str,
     body: Bytes,
+) -> Result<Views> {
+    let mut bodies = Vec::new();
+    let mut views = normalize_into(policy, path, query, content_type, body, &mut |text| {
+        bodies.push(text.to_owned());
+        Ok(())
+    })
+    .await?;
+    views.body = bodies;
+    Ok(views)
+}
+
+async fn normalize_into(
+    policy: &EffectivePolicy,
+    path: &str,
+    query: &str,
+    content_type: &str,
+    body: Bytes,
+    emit: &mut impl FnMut(&str) -> Result<()>,
 ) -> Result<Views> {
     if path.len() + query.len() > policy.limits.uri_bytes {
         return Err(error("uri_limit"));
@@ -124,8 +152,6 @@ pub async fn normalize(
         return Err(error("ambiguous_path"));
     }
     let queries = variants(query, passes, true, true)?;
-    let raw = String::from_utf8_lossy(&body).into_owned();
-    let mut bodies;
     let media = content_type
         .split(';')
         .next()
@@ -134,15 +160,15 @@ pub async fn normalize(
         .to_ascii_lowercase();
     // A Content-Type on a bodyless request does not create a JSON document.
     if !body.is_empty() && (media == "application/json" || media.ends_with("+json")) {
-        bodies = vec![raw];
-        let parsed: StrictJson =
-            serde_json::from_slice(&body).map_err(|_| error("invalid_or_ambiguous_json"))?;
-        json_views(parsed.0, &mut bodies, passes)?;
+        emit(&String::from_utf8_lossy(&body))?;
+        crate::json_scan::scan_strings(&body, |text| {
+            scan_variants(text, passes, false, false, emit)
+        })?;
     } else if media == "application/x-www-form-urlencoded" {
-        std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
-        bodies = variants_owned(raw, passes, true, true)?;
+        let text = std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
+        scan_variants(text, passes, true, true, emit)?;
     } else if media == "multipart/form-data" {
-        bodies = vec![raw];
+        emit(&String::from_utf8_lossy(&body))?;
         let boundary = multer::parse_boundary(content_type)
             .map_err(|_| error("invalid_multipart_boundary"))?;
         if boundary.len() > 70 {
@@ -161,29 +187,24 @@ pub async fn normalize(
                 return Err(error("multipart_part_limit"));
             }
             if let Some(name) = field.name() {
-                bodies.extend(variants(name, passes, false, false)?);
+                scan_variants(name, passes, false, false, emit)?;
             }
             if let Some(name) = field.file_name() {
-                bodies.extend(variants(name, passes, false, false)?);
+                scan_variants(name, passes, false, false, emit)?;
             }
             let value = field
                 .bytes()
                 .await
                 .map_err(|_| error("invalid_multipart"))?;
-            bodies.extend(variants_owned(
-                String::from_utf8_lossy(&value).into_owned(),
-                passes,
-                false,
-                false,
-            )?);
+            scan_variants(&String::from_utf8_lossy(&value), passes, false, false, emit)?;
         }
     } else {
-        bodies = variants_owned(raw, passes, false, false)?;
+        scan_variants(&String::from_utf8_lossy(&body), passes, false, false, emit)?;
     }
     Ok(Views {
         path: paths,
         query: queries,
-        body: bodies,
+        body: Vec::new(),
         headers: Vec::new(),
     })
 }
@@ -195,12 +216,52 @@ pub struct Match {
     pub high_confidence: bool,
     pub exception_profile: Option<String>,
 }
+
+/// Completed syntax/normalization with body rule hits, never retained body values.
+pub struct ScannedRequest {
+    pub views: Views,
+    body_matches: BTreeSet<String>,
+}
 pub struct Inspector {
     pub policy: EffectivePolicy,
     rules: BTreeMap<String, Regex>,
     exceptions: Vec<Regex>,
 }
 impl Inspector {
+    pub async fn scan(
+        &self,
+        path: &str,
+        query: &str,
+        content_type: &str,
+        body: Bytes,
+    ) -> Result<ScannedRequest> {
+        let mut body_matches = BTreeSet::new();
+        let views = normalize_into(&self.policy, path, query, content_type, body, &mut |text| {
+            for (id, entry) in &self.policy.rules {
+                if !body_matches.contains(id)
+                    && entry
+                        .rule
+                        .targets
+                        .iter()
+                        .any(|target| matches!(target, Target::Body))
+                    && self.rules[id].is_match(text)
+                {
+                    body_matches.insert(id.clone());
+                }
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(ScannedRequest {
+            views,
+            body_matches,
+        })
+    }
+
+    pub fn inspect_scanned(&self, request: &ScannedRequest, method: &str) -> Vec<Match> {
+        self.inspect_with_hits(&request.views, method, &request.body_matches)
+    }
+
     pub fn new(policy: EffectivePolicy) -> Result<Self> {
         let rules = policy
             .rules
@@ -223,21 +284,31 @@ impl Inspector {
         })
     }
     pub fn inspect(&self, views: &Views, method: &str) -> Vec<Match> {
+        self.inspect_with_hits(views, method, &BTreeSet::new())
+    }
+
+    fn inspect_with_hits(
+        &self,
+        views: &Views,
+        method: &str,
+        body_matches: &BTreeSet<String>,
+    ) -> Vec<Match> {
         self.policy
             .rules
             .iter()
             .filter_map(|(id, entry)| {
                 let regex = &self.rules[id];
-                let hit = entry.rule.targets.iter().any(|target| {
-                    match target {
-                        Target::Path => &views.path,
-                        Target::Query => &views.query,
-                        Target::Body => &views.body,
-                        Target::Headers => &views.headers,
-                    }
-                    .iter()
-                    .any(|value| regex.is_match(value))
-                });
+                let hit = body_matches.contains(id)
+                    || entry.rule.targets.iter().any(|target| {
+                        match target {
+                            Target::Path => &views.path,
+                            Target::Query => &views.query,
+                            Target::Body => &views.body,
+                            Target::Headers => &views.headers,
+                        }
+                        .iter()
+                        .any(|value| regex.is_match(value))
+                    });
                 if !hit {
                     return None;
                 }

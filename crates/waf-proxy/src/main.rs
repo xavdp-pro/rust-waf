@@ -366,10 +366,17 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     });
     let confirmed_fields = context
         .as_ref()
-        .map_or(&[][..], |context| context.confirmed_fields.as_slice());
+        .map(|context| {
+            context
+                .confirmed_fields
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let matches =
         app.inspector
-            .inspect_scanned_with_fields(&scanned, effective_method, confirmed_fields);
+            .inspect_scanned_with_fields(&scanned, effective_method, &confirmed_fields);
     // Inspection is complete. Do not retain normalized bodies during backend I/O.
     drop(scanned);
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());

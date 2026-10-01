@@ -121,3 +121,98 @@ async fn benign_text_and_php_array_form_fields_are_preserved() {
         assert!(i.inspect(&views, "POST").is_empty());
     }
 }
+
+#[tokio::test]
+async fn large_complete_views_preserve_binary_and_encoded_tail_detection() {
+    let i = inspector();
+    let size = 8 * 1024 * 1024;
+    for media in [
+        "application/octet-stream",
+        "application/x-www-form-urlencoded",
+    ] {
+        let mut body = vec![
+            if media == "application/octet-stream" {
+                0xff
+            } else {
+                b'a'
+            };
+            size
+        ];
+        let tail = b"%2566orbidden-sentinel";
+        body[size - tail.len()..].copy_from_slice(tail);
+        let views = normalize(&i.policy, "/fixture/", "", media, Bytes::from(body))
+            .await
+            .unwrap();
+        assert_eq!(i.inspect(&views, "POST").len(), 1);
+        assert_eq!(views.body.len(), 3);
+    }
+    let views = normalize(
+        &i.policy,
+        "/fixture/",
+        "",
+        "application/octet-stream",
+        Bytes::from(vec![0xff; size]),
+    )
+    .await
+    .unwrap();
+    assert!(i.inspect(&views, "POST").is_empty());
+    // Every invalid byte remains visible as a replacement character; no byte sampling.
+    assert_eq!(views.body.len(), 1);
+    assert_eq!(views.body[0].len(), size * 3);
+    let views = normalize(
+        &i.policy,
+        "/fixture/",
+        "",
+        "application/x-www-form-urlencoded",
+        Bytes::from(vec![b'a'; size]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(views.body.len(), 1);
+    assert_eq!(views.body[0].len(), size);
+}
+
+#[tokio::test]
+async fn owned_json_and_multipart_views_preserve_keys_escapes_and_file_tail() {
+    let i = inspector();
+    for body in [
+        br#"{"%2566orbidden-sentinel":[0,true,null,{"safe":"ok"}]}"#.as_slice(),
+        br#"{"safe":["%2566orbidden-sentinel"]}"#.as_slice(),
+        br#"{"safe":"\u0066orbidden-sentinel"}"#.as_slice(),
+    ] {
+        let views = normalize(
+            &i.policy,
+            "/fixture/",
+            "",
+            "application/json",
+            Bytes::copy_from_slice(body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(i.inspect(&views, "POST").len(), 1);
+    }
+    let mut body = b"--fixture\r\nContent-Disposition: form-data; name=\"file\"; filename=\"example.bin\"\r\n\r\n".to_vec();
+    body.extend(std::iter::repeat_n(0xff, 1024 * 1024));
+    body.extend_from_slice(b"%2566orbidden-sentinel\r\n--fixture--\r\n");
+    let views = normalize(
+        &i.policy,
+        "/fixture/",
+        "",
+        "multipart/form-data; boundary=fixture",
+        Bytes::from(body),
+    )
+    .await
+    .unwrap();
+    assert_eq!(i.inspect(&views, "POST").len(), 1);
+    assert!(
+        normalize(
+            &i.policy,
+            "/fixture/",
+            "",
+            "application/x-www-form-urlencoded",
+            Bytes::from_static(b"a=%zz")
+        )
+        .await
+        .is_err()
+    );
+}

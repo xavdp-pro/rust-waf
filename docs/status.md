@@ -1,5 +1,9 @@
 # Actual status — 2026-10-01
 
+## Normalization allocation checkpoint
+
+Owned normalization now avoids duplicate raw text/form views and repeated JSON-string clones, skips unnecessary decoding buffers and releases inspection views before backend I/O. Two added complete-body tests pass alongside the existing semantic/contract/ban suite and seventeen neutral-backend HTTP scenarios. Local six-case baseline/optimized single-process RSS observations and reproduction are in [normalization resources](normalization-resources.md). They establish allocation reductions only; JSON node amplification and concurrent gateway resource acceptance remain unresolved. No inspection scope, profile limit or acceptance threshold was reduced.
+
 ## Implemented
 
 `waf-core` parses versioned JSON profiles, rejects unknown and duplicate top-level fields, composes a selected core → application → site chain, fingerprints its canonical representation, preserves rule provenance and declares scoped site exceptions. Limits may tighten only. Core parsing, ingress, forwarding and authentication invariants cannot be excepted. WordPress is an application profile; its routes do not belong in engine code.

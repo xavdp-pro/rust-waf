@@ -326,6 +326,8 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         context.effective_method.as_str()
     });
     let matches = app.inspector.inspect(&views, effective_method);
+    // Inspection is complete. Do not retain normalized bodies during backend I/O.
+    drop(views);
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());
     let records = serde_json::to_value(&matches).unwrap();
     if blocked && app.config.mode == Mode::Enforce {

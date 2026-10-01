@@ -72,7 +72,12 @@ async fn query_override_precedes_header_and_preserves_head_options() {
 #[tokio::test]
 async fn php_key_normalization_and_ambiguous_dispatch_are_handled() {
     let wp = policy();
-    for query in ["%5Fmethod=DELETE", ".method=DELETE", "+_method=DELETE"] {
+    for query in [
+        "%5Fmethod=DELETE",
+        ".method=DELETE",
+        "+_method=DELETE",
+        "_method%00suffix=DELETE",
+    ] {
         let context = wp
             .analyze(request("/wp-json/shop/v1/cart/items/42", query, "POST"))
             .await
@@ -85,6 +90,9 @@ async fn php_key_normalization_and_ambiguous_dispatch_are_handled() {
         "_method=TRACE",
         "rest_route[]=x",
         "rest_route=/x&rest.route=/y",
+        "rest_route=/x&rest_route%00suffix=/y",
+        "_method=GET&_method%00suffix=DELETE",
+        "_method[]%00suffix=DELETE",
     ] {
         assert!(
             wp.analyze(request("/wp-json/shop/v1/cart/items/42", query, "POST"))
@@ -103,6 +111,46 @@ async fn php_key_normalization_and_ambiguous_dispatch_are_handled() {
         .await
         .unwrap();
     assert_eq!(context.effective_method, "POST");
+}
+
+#[tokio::test]
+async fn php_nul_name_aliases_resolve_query_and_post_dispatch_before_method_checks() {
+    let wp = policy();
+    let context = wp
+        .analyze(request(
+            "/index.php",
+            "rest_route%00suffix=/shop/v1/cart/items/42",
+            "PUT",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        context.rest_route.as_deref(),
+        Some("/shop/v1/cart/items/42")
+    );
+    assert_eq!(wp.check(&context, false).unwrap().status, 405);
+    let context = wp
+        .analyze(request(
+            "/wp-admin/admin-ajax.php",
+            "action%00suffix=fixture_lookup",
+            "POST",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(context.action.as_deref(), Some("fixture_lookup"));
+    for body in [
+        b"rest_route%00suffix=/shop/v1/cart/items/42".as_slice(),
+        b"rest_route%00[ignored]=/shop/v1/cart/items/42".as_slice(),
+    ] {
+        let mut input = request("/index.php", "", "POST");
+        input.content_type = "application/x-www-form-urlencoded";
+        input.body = bytes::Bytes::copy_from_slice(body);
+        let context = wp.analyze(input).await.unwrap();
+        assert_eq!(
+            context.rest_route.as_deref(),
+            Some("/shop/v1/cart/items/42")
+        );
+    }
 }
 #[tokio::test]
 async fn front_controller_alternatives_custom_prefix_and_trailing_slash_are_resolved() {

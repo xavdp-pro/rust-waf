@@ -2,7 +2,7 @@
   "schema_version": 1,
   "profile_id": "core-base",
   "layer": "core",
-  "version": "0.1.0-design",
+  "version": "0.2.0",
   "extends": null,
   "invariants": [
     "deny_dynamic_forwarding_on_engine_failure",
@@ -21,6 +21,74 @@
     "per_detection_api_calls": false
   },
   "metadata": {
-    "status": "design-only"
-  }
+    "status": "implemented-unqualified"
+  },
+  "rules": [
+    {
+      "id": "common.sql.union-select",
+      "targets": [
+        "query",
+        "body",
+        "headers"
+      ],
+      "pattern": "(?i)\\bunion(?:\\s|/\\*[^*]*\\*/)+(?:all(?:\\s|/\\*[^*]*\\*/)+)?select\\b",
+      "high_confidence": false
+    },
+    {
+      "id": "common.sql.time-function",
+      "targets": [
+        "query",
+        "body",
+        "headers"
+      ],
+      "pattern": "(?i)\\b(?:sleep|benchmark)\\s*\\(\\s*[0-9]+",
+      "high_confidence": false
+    },
+    {
+      "id": "common.xss.script-element",
+      "targets": [
+        "query",
+        "body",
+        "headers"
+      ],
+      "pattern": "(?i)<\\s*script\\b",
+      "high_confidence": false
+    },
+    {
+      "id": "common.xss.javascript-scheme",
+      "targets": [
+        "query",
+        "body",
+        "headers"
+      ],
+      "pattern": "(?i)javascript\\s*:",
+      "high_confidence": false
+    },
+    {
+      "id": "common.php.executable-tag",
+      "targets": [
+        "body"
+      ],
+      "pattern": "(?i)<\\?(?:php\\b|=)",
+      "high_confidence": false
+    },
+    {
+      "id": "common.path.traversal",
+      "targets": [
+        "query",
+        "body"
+      ],
+      "pattern": "(?:\\.\\./|\\.\\.\\\\)",
+      "high_confidence": false
+    },
+    {
+      "id": "common.file.sensitive-reference",
+      "targets": [
+        "query",
+        "body"
+      ],
+      "pattern": "(?i)(?:/etc/(?:passwd|shadow)|/proc/self/(?:environ|cmdline)|\\bphp://(?:filter|input))",
+      "high_confidence": false
+    }
+  ]
 }

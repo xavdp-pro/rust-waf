@@ -10,7 +10,7 @@ Unix HTTP transport, complete-body inspection and neutral-backend protocol evide
 
 ## Step 03 — Common rules and labeled corpus
 
-Implement decisions and common rules with observe/enforce modes. Acceptance: independent labels, actual decision records, TP/FP/TN/FN scoring, separate exception cases, and backend proof independent of HTTP status.
+Seven initial common patterns, observe/enforce decisions, a 30-case fictional development corpus and correlated neutral-backend checks are implemented. Independent acceptance coverage is pending. Implement decisions and common rules with observe/enforce modes. Acceptance: independent labels, actual decision records, TP/FP/TN/FN scoring, separate exception cases, and backend proof independent of HTTP status.
 
 ## Step 04 — Generic WordPress specialization
 
@@ -18,7 +18,7 @@ Qualify REST, AJAX, login, uploads, roles, methods, and optional plugin modules.
 
 ## Step 05 — Integration and reusable evidence
 
-Integrate the isolated Nginx FastCGI backend, read-only statistics, ingress adapters, and bounded temporary bans. Acceptance: no bypass, correct stop behavior, friend-IP cases, comparable baseline/protected load tests, latency/throughput/error/resource measurements, and correlated non-execution proof. No per-attack Cloudflare API calls.
+The bounded local ban table and early proxy check are implemented and tested. Nginx early rejection, the FastCGI backend, actual statistics integration and deployment proof are pending. Integrate the isolated Nginx FastCGI backend, read-only statistics, ingress adapters, and bounded temporary bans. Acceptance: no bypass, correct stop behavior, friend-IP cases, comparable baseline/protected load tests, latency/throughput/error/resource measurements, and correlated non-execution proof. No per-attack Cloudflare API calls.
 
 Site qualification and private profiles are owned by their deployers and maintained separately. An analysis agent builds each site layer from actual installed plugins/themes, custom code, core differences and observed behavior, then tests the resulting policy. Changes to those components require targeted requalification. Public steps are not completed by this initial documentation alone.
 

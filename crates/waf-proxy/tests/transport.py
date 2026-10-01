@@ -1,4 +1,5 @@
 """Exercise the compiled proxy against an independently recording Unix HTTP backend."""
+import contextlib
 import hashlib
 import http.client
 import http.server
@@ -79,8 +80,8 @@ class Transport(unittest.TestCase):
         cls.backend.shutdown(); cls.backend.server_close()
         cls.thread.join(timeout=3)
         cls.directory.cleanup()
-    def request(self, method='POST', path='/form/?keep=original', body=b'benign', headers=None):
-        connection = Connection(self.tmp/'proxy.sock')
+    def request(self, method='POST', path='/form/?keep=original', body=b'benign', headers=None, socket_path=None):
+        connection = Connection(socket_path or self.tmp/'proxy.sock')
         values = {'X-Waf-Client-IP':'198.51.100.25','X-Waf-Admin-Friend':'0','Content-Type':'text/plain'}
         if headers:
             values.update(headers)
@@ -139,6 +140,121 @@ class Transport(unittest.TestCase):
         sock.sendall(b'POST /form/ HTTP/1.1\r\nHost: localhost\r\nX-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nContent-Length: 10\r\n\r\na')
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
+    @contextlib.contextmanager
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False):
+        config=dict(self.config)
+        config['listen_socket']=str(self.tmp/(name+'.sock'))
+        config['mode']=mode
+        config['bans']={'threshold':2,'window_seconds':10,'duration_seconds':1,'max_entries':16}
+        core=json.loads((ROOT/'profiles/core/base.json' if common else self.tmp/'core.json').read_text())
+        if not common:core['rules'][0]['high_confidence']=reliable
+        core_path=self.tmp/(name+'-core.json');core_path.write_text(json.dumps(core))
+        config['profiles']=list(config['profiles']);config['profiles'][0]=str(core_path)
+        if exception:
+            site=json.loads((ROOT/'profiles/sites/example.json').read_text())
+            site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
+            site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
+            config['profiles'][2]=str(site_path)
+        config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
+        event_path=self.tmp/(name+'-events.txt')
+        with open(event_path,'w') as out:
+            process=subprocess.Popen([BINARY,str(config_path)],stdout=out,stderr=subprocess.PIPE)
+            try:
+                for _ in range(300):
+                    if pathlib.Path(config['listen_socket']).exists():break
+                    if process.poll() is not None:raise RuntimeError(process.stderr.read().decode())
+                    time.sleep(.01)
+                else:raise RuntimeError('Alternate listener not ready')
+                yield config['listen_socket'],event_path
+            finally:
+                process.terminate();process.wait(timeout=5);process.stderr.close()
+    def test_06_reliable_bans_are_early_temporary_and_exempt_trusted_access(self):
+        with self.alternate_proxy('reliable-ban',reliable=True) as (path,events):
+            before=len(self.received)
+            for _ in range(2):
+                self.assertEqual(self.request(body=b'forbidden-sentinel',socket_path=path)[0],403)
+            status,headers,_=self.request(socket_path=path)
+            self.assertEqual(status,429);self.assertIn('retry-after',headers)
+            self.assertEqual(len(self.received),before)
+            self.assertEqual(self.request(socket_path=path,headers={'X-Waf-Admin-Friend':'1'})[0],200)
+            # Trusted access avoids bans but still undergoes ordinary inspection.
+            self.assertEqual(self.request(socket_path=path,body=b'forbidden-sentinel',headers={'X-Waf-Admin-Friend':'1'})[0],403)
+            time.sleep(1.1)
+            self.assertEqual(self.request(socket_path=path)[0],200)
+            records=[json.loads(line) for line in events.read_text().splitlines()]
+            self.assertEqual(sum(bool(r['ban_started']) for r in records),1)
+            banned=next(r for r in records if r['status']==429)
+            self.assertFalse(banned['backend_attempted'])
+    def test_07_unreliable_and_observe_matches_do_not_ban(self):
+        for name,mode in [('uncertain','enforce'),('observation','observe')]:
+            with self.alternate_proxy(name,mode=mode,reliable=mode=='observe') as (path,events):
+                for _ in range(3):
+                    status,_,_=self.request(body=b'forbidden-sentinel',socket_path=path)
+                    self.assertEqual(status,200 if mode=='observe' else 403)
+                self.assertEqual(self.request(socket_path=path)[0],200)
+                records=[json.loads(line) for line in events.read_text().splitlines()]
+                self.assertFalse(any(r['ban_started'] for r in records))
+                if mode=='observe':self.assertTrue(all(r['backend_attempted'] for r in records))
+    def test_08_exceptions_are_method_scoped_and_do_not_trigger_bans(self):
+        with self.alternate_proxy('excepted',reliable=True,exception=True) as (path,events):
+            for _ in range(3):
+                self.assertEqual(self.request(path='/feedback/',body=b'forbidden-sentinel',socket_path=path)[0],200)
+            self.assertEqual(self.request(path='/other/',body=b'forbidden-sentinel',socket_path=path)[0],403)
+            self.assertEqual(self.request(method='GET',path='/feedback/',body=b'forbidden-sentinel',socket_path=path)[0],403)
+            records=[json.loads(line) for line in events.read_text().splitlines()]
+            self.assertEqual(records[0]['matches'][0]['exception_profile'],'example-site')
+            self.assertFalse(records[0]['ban_started'])
+    def test_09_ambiguous_wire_framing_does_not_reach_backend(self):
+        before=len(self.received)
+        requests=[
+            b'POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n',
+            b'POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nContent-Length: 5\r\n',
+            b'POST / HTTP/1.1\r\nHost: localhost\r\nHost: other.test\r\nContent-Length: 0\r\n',
+        ]
+        for request in requests:
+            sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);sock.settimeout(3);sock.connect(str(self.tmp/'proxy.sock'))
+            sock.sendall(request+b'X-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nConnection: close\r\n\r\n0\r\n\r\n')
+            line=sock.recv(8192).split(b'\r\n')[0];sock.close()
+            self.assertGreaterEqual(int(line.split()[1]),400)
+        self.assertEqual(len(self.received),before)
+    def test_10_single_request_connections_prevent_pipeline_bypass(self):
+        before=len(self.received)
+        sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);sock.settimeout(3);sock.connect(str(self.tmp/'proxy.sock'))
+        base=b'HTTP/1.1\r\nHost: localhost\r\nX-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nContent-Length: '
+        sock.sendall(b'POST /first/ '+base+b'6\r\n\r\nbenign'+b'POST /second/ '+base+b'18\r\n\r\nforbidden-sentinel')
+        data=b''
+        while True:
+            chunk=sock.recv(8192)
+            if not chunk:break
+            data+=chunk
+        sock.close()
+        self.assertIn(b'200',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before+1)
+        self.assertEqual(self.received[-1]['path'],'/first/')
+    def test_11_header_timeout_never_reaches_backend(self):
+        before=len(self.received)
+        sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);sock.settimeout(3);sock.connect(str(self.tmp/'proxy.sock'))
+        sock.sendall(b'POST / HTTP/1.1\r\nHost: ')
+        data=sock.recv(8192);sock.close()
+        self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
+    def test_12_common_development_decisions_have_backend_receipt_proof(self):
+        fixture=json.loads((ROOT/'fixtures/common-development.json').read_text())
+        sys.path.insert(0,str(ROOT/'observability'))
+        from evaluate_waf import evaluate
+        results=[]
+        with self.alternate_proxy('common-corpus',common=True) as (path,event_path):
+            for case in fixture['cases']:
+                before=len(self.received)
+                headers={'Content-Type':case['content_type'],**case['headers']}
+                uri=case['path']+('?' + case['query'] if case['query'] else '')
+                status,response_headers,_=self.request(method=case['method'],path=uri,body=case['body'].encode(),headers=headers,socket_path=path)
+                event=next(r for r in [json.loads(line) for line in event_path.read_text().splitlines()] if r['request_id']==response_headers['x-request-id'])
+                reached=any(r['id']==event['request_id'] for r in self.received[before:])
+                results.append({'label':case['label'],'decision':event['decision'],'backend_reached':reached})
+                if event['decision']=='block':self.assertFalse(reached,case['id'])
+            report=evaluate(results)
+            self.assertEqual(report['fp'],0);self.assertEqual(report['fn'],0)
+            self.assertEqual(report['backend_proof_coverage'],1)
+            print('COMMON_DEVELOPMENT_CORPUS '+json.dumps(report,sort_keys=True))
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

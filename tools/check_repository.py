@@ -10,7 +10,7 @@ profiles=[json.loads(p.read_text()) for p in (root/'profiles').rglob('*.json')]
 registry={p['profile_id']:p for p in profiles}
 if len(registry)!=len(profiles):raise SystemExit('Duplicate profile identifiers')
 for profile in profiles:
- if profile['metadata']['status']!='design-only':raise SystemExit('Example must state its design-only status')
+ if profile['metadata']['status'] not in {'design-only','implemented-unqualified','qualified'}:raise SystemExit('Unknown profile qualification status')
  seen=set();node=profile
  while node is not None:
   name=node['profile_id']
@@ -32,4 +32,4 @@ for file in root.rglob('*'):
   for target in re.findall(r'\[[^]]*\]\(([^)]+)\)',text):
    if '://' in target or target.startswith('#'):continue
    if not (file.parent/target.split('#')[0]).exists():raise SystemExit('Broken local link: '+str(file.relative_to(root))+' -> '+target)
-print('Repository foundation passed: three design profiles, valid inheritance, stats-only contract, offline API budget, local links, basic private-material check. No Rust engine was tested.')
+print('Repository foundation passed: three profile contracts, valid inheritance, stats-only contract, offline API budget, local links, basic private-material check. No Rust engine was tested.')

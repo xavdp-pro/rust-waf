@@ -55,6 +55,7 @@ struct App {
     config: Config,
     semaphore: Semaphore,
     bans: Mutex<BanTable>,
+    wordpress: Option<waf_wordpress::Wordpress>,
 }
 fn one<'a>(headers: &'a HeaderMap, key: &str) -> Result<Option<&'a str>, &'static str> {
     let mut values = headers.get_all(key).iter();
@@ -96,6 +97,7 @@ struct Evidence<'a> {
     matches: serde_json::Value,
     backend_attempted: bool,
     ban_started: bool,
+    application: Option<serde_json::Value>,
 }
 fn finish(
     app: &App,
@@ -112,10 +114,11 @@ fn finish(
         matches,
         backend_attempted,
         ban_started,
+        application,
     } = evidence;
     let event = serde_json::json!({"schema_version":1,"ts_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
         "request_id":id,"fingerprint":app.inspector.policy.fingerprint,"decision":decision,"reason":reason,"matches":matches,
-        "status":status.as_u16(),"elapsed_us":start.elapsed().as_micros(),"backend_attempted":backend_attempted,"ban_started":ban_started});
+        "status":status.as_u16(),"elapsed_us":start.elapsed().as_micros(),"backend_attempted":backend_attempted,"ban_started":ban_started,"application":application});
     let write_result = writeln!(io::stdout().lock(), "{event}");
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = if write_result.is_ok() {
@@ -145,6 +148,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 matches: serde_json::json!([]),
                 backend_attempted: false,
                 ban_started: false,
+                application: None,
             },
             Bytes::from_static(b"Request denied\n"),
             HeaderMap::new(),
@@ -273,7 +277,52 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         Ok(h) => h,
         Err(e) => return deny(StatusCode::BAD_REQUEST, &e.0),
     };
-    let matches = app.inspector.inspect(&views, parts.method.as_str());
+    let context = if let Some(wordpress) = &app.wordpress {
+        match wordpress
+            .analyze(waf_wordpress::Request {
+                path: parts.uri.path(),
+                query: parts.uri.query().unwrap_or(""),
+                wire_method: parts.method.as_str(),
+                headers: &headers,
+                content_type,
+                body: body.clone(),
+                max_parts: app.inspector.policy.limits.multipart_parts,
+            })
+            .await
+        {
+            Ok(context) => Some(context),
+            Err(error) => return deny(StatusCode::BAD_REQUEST, &error.0),
+        }
+    } else {
+        None
+    };
+    let application = context
+        .as_ref()
+        .map(|context| serde_json::to_value(context).unwrap());
+    if let (Some(wordpress), Some(context)) = (&app.wordpress, &context) {
+        if let Some(denial) = wordpress.check(context, trusted) {
+            return finish(
+                &app,
+                &id,
+                start,
+                StatusCode::from_u16(denial.status).unwrap(),
+                Evidence {
+                    decision: "block",
+                    reason: denial.reason,
+                    matches: serde_json::json!([{"policy_id":denial.policy_id,"profile_id":denial.profile_id}]),
+                    backend_attempted: false,
+                    ban_started: false,
+                    application,
+                },
+                Bytes::from_static(b"Request denied\n"),
+                HeaderMap::new(),
+            );
+        }
+    }
+    let effective_method = context.as_ref().map_or(parts.method.as_str(), |context| {
+        context.effective_method.as_str()
+    });
+    let matches = app.inspector.inspect(&views, effective_method);
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());
     let records = serde_json::to_value(&matches).unwrap();
     if blocked && app.config.mode == Mode::Enforce {
@@ -299,6 +348,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 matches: records,
                 backend_attempted: false,
                 ban_started,
+                application: application.clone(),
             },
             Bytes::from_static(b"Request denied\n"),
             HeaderMap::new(),
@@ -378,6 +428,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 matches: records,
                 backend_attempted: true,
                 ban_started: false,
+                application: application.clone(),
             },
             body,
             headers,
@@ -393,6 +444,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
                 matches: records,
                 backend_attempted: true,
                 ban_started: false,
+                application,
             },
             Bytes::from_static(b"Backend unavailable\n"),
             HeaderMap::new(),
@@ -425,13 +477,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|p| Profile::parse(&fs::read(p)?).map_err(Into::into))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     let inspector = Inspector::new(compose(profiles, &config.site_id)?)?;
+    let wordpress = waf_wordpress::Wordpress::from_modules(&inspector.policy.modules)?;
+    let bans = Mutex::new(BanTable::new(config.bans.clone())?);
     // Never unlink an existing socket: a second process must fail, not steal the listener.
     let listener = UnixListener::bind(&config.listen_socket)?;
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&config.listen_socket, fs::Permissions::from_mode(0o660))?;
-    let bans = Mutex::new(BanTable::new(config.bans.clone())?);
     let app = Arc::new(App {
         bans,
+        wordpress,
         semaphore: Semaphore::new(config.max_concurrent),
         config,
         inspector,
@@ -472,6 +526,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             matches: serde_json::json!([]),
                             backend_attempted: false,
                             ban_started: false,
+                            application: None,
                         },
                         Bytes::from_static(b"Request denied\n"),
                         HeaderMap::new(),

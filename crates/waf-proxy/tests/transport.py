@@ -141,7 +141,7 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
         config['mode']=mode
@@ -150,9 +150,16 @@ class Transport(unittest.TestCase):
         if not common:core['rules'][0]['high_confidence']=reliable
         core_path=self.tmp/(name+'-core.json');core_path.write_text(json.dumps(core))
         config['profiles']=list(config['profiles']);config['profiles'][0]=str(core_path)
-        if exception:
+        if exception or wordpress:
             site=json.loads((ROOT/'profiles/sites/example.json').read_text())
-            site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
+            if exception:
+                site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
+            if wordpress:
+                site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'method_rules':[
+                    {'id':'fixture.rest-read','scope':'rest','pattern':'^/fixture/v1/read-only$','methods':['GET'],'evidence':'fictional-rest-read-workflow'},
+                    {'id':'fixture.cart','scope':'rest','pattern':'^/fixture/v1/cart/items/[0-9]+$','methods':['GET','DELETE'],'evidence':'fictional-cart-method-workflow'},
+                    {'id':'fixture.ajax-read','scope':'ajax','pattern':'^fixture_lookup$','methods':['GET'],'evidence':'fictional-ajax-method-workflow'},
+                ]}}]
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -255,6 +262,52 @@ class Transport(unittest.TestCase):
             self.assertEqual(report['fp'],0);self.assertEqual(report['fn'],0)
             self.assertEqual(report['backend_proof_coverage'],1)
             print('COMMON_DEVELOPMENT_CORPUS '+json.dumps(report,sort_keys=True))
+    def test_13_wordpress_effective_methods_admin_and_backend_proof(self):
+        with self.alternate_proxy('wordpress-methods',wordpress=True) as (socket_path,event_path):
+            denied=[
+                {'path':'/wp-json/fixture/v1/read-only','method':'POST'},
+                {'path':'/wp-json/fixture/v1/read-only?_method=DELETE','method':'POST'},
+                {'path':'/index.php?rest.route=/fixture/v1/read-only','method':'POST','headers':{'X-HTTP-Method-Override':'DELETE'}},
+                {'path':'/wp-json/fixture/v1/cart/items/42?_method=PUT','method':'POST'},
+                {'path':'/wp-admin/users.php','method':'GET'},
+                {'path':'/%77p-admin/plugins.php','method':'GET'},
+                {'path':'/wp-admin/admin-ajax.php?action=fixture_lookup','method':'POST'},
+                {'path':'/','body':b'rest_route=/fixture/v1/read-only','headers':{'Content-Type':'application/x-www-form-urlencoded'}},
+            ]
+            for case in denied:
+                before=len(self.received)
+                status,headers,_=self.request(socket_path=socket_path,**case)
+                self.assertIn(status,[403,405])
+                event=next(r for r in [json.loads(line) for line in event_path.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertEqual(len(self.received),before)
+                self.assertFalse(event['ban_started'])
+            allowed=[
+                {'path':'/wp-json/fixture/v1/cart/items/42?_method=delete','method':'POST','headers':{'X-HTTP-Method-Override':'PUT'}},
+                {'path':'/wp-json/fixture/v1/read-only','method':'OPTIONS'},
+                {'path':'/wp-admin/users.php','method':'GET','headers':{'X-Waf-Admin-Friend':'1'}},
+                {'path':'/wp-login.php','method':'POST'},
+                {'path':'/wp-admin/admin-ajax.php?action=fixture_lookup','method':'GET'},
+                {'path':'/wp-json/unknown/v1/custom','method':'PATCH'},
+            ]
+            for case in allowed:
+                status,headers,_=self.request(socket_path=socket_path,**case);self.assertEqual(status,200)
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+            records=[json.loads(line) for line in event_path.read_text().splitlines()]
+            override=next(r for r in records if r['application'] and r['application']['method_source']=='query' and r['decision']=='allow')
+            self.assertEqual(override['application']['effective_method'],'DELETE')
+            method_denial=next(r for r in records if r['reason']=='wordpress_method_policy')
+            self.assertEqual(method_denial['matches'][0]['profile_id'],'example-site')
+    def test_14_rest_override_cannot_reuse_wire_post_exception(self):
+        with self.alternate_proxy('wordpress-exception',exception=True) as (socket_path,events):
+            # This URL is outside REST, so the POST exception still works.
+            self.assertEqual(self.request(path='/feedback/?_method=DELETE',body=b'forbidden-sentinel',socket_path=socket_path)[0],200)
+            # A query-selected REST dispatch has DELETE semantics and cannot use that POST exception.
+            before=len(self.received)
+            status,headers,_=self.request(path='/feedback/?rest_route=/fixture/v1/x&_method=DELETE',body=b'forbidden-sentinel',socket_path=socket_path)
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+            event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+            self.assertEqual(event['application']['effective_method'],'DELETE')
+            self.assertIsNone(event['matches'][0]['exception_profile'])
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

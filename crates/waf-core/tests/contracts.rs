@@ -168,3 +168,21 @@ fn unknown_rules_invalid_regex_and_silent_overrides_are_rejected() {
     });
     assert!(compose(input, "example-site").is_err());
 }
+
+#[test]
+fn modules_preserve_provenance_reject_silent_overrides_and_nested_duplicate_keys() {
+    use waf_core::profile::ModuleSpec;
+    let mut input = profiles();
+    input[2].modules.push(ModuleSpec {
+        name: "wordpress-site".into(),
+        settings: serde_json::json!({"schema_version":1}),
+    });
+    let policy = compose(input.clone(), "example-site").unwrap();
+    assert_eq!(policy.modules["wordpress-site"].profile_id, "example-site");
+    assert_eq!(policy.modules["wordpress"].layer, Layer::Application);
+    let duplicate_module = input[1].modules[0].clone();
+    input[2].modules.push(duplicate_module);
+    assert!(compose(input, "example-site").is_err());
+    let duplicate=br#"{"schema_version":1,"profile_id":"site","layer":"site","version":"1","extends":"wordpress-base","modules":[{"name":"wordpress-site","settings":{"schema_version":1,"schema_version":2}}]}"#;
+    assert!(Profile::parse(duplicate).is_err());
+}

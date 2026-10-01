@@ -18,7 +18,8 @@ An open-source Rust WAF foundation with a shared engine, a generic WordPress pro
 crates/waf-core/         profile composition and bounded application-independent inspection
 crates/waf-proxy/        Unix-socket HTTP gateway and correlated decision records
 profiles/core/          shared design contract
-profiles/wordpress/     generic WordPress design profile
+crates/waf-wordpress/    generic WordPress dispatch semantics
+profiles/wordpress/     implemented but unqualified WordPress profile
 profiles/sites/         fictional example only
 contracts/              composition and event contracts
 observability/          origin measurements and labeled-decision scoring
@@ -42,4 +43,4 @@ python3 tools/check_repository.py
 python3 observability/evaluate_waf.py --self-test
 ```
 
-These Python commands check the foundation and a synthetic scoring fixture. Run `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` to verify Rust composition. The core includes initial unqualified protection patterns; WordPress/site examples still need specialization and qualification. No hosted CI or scheduled automation is enabled.
+These Python commands check the foundation and a synthetic scoring fixture. Run `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` to verify Rust composition. The core includes initial unqualified protection patterns; WordPress dispatch is implemented; actual site profiles and workflows still need qualification. No hosted CI or scheduled automation is enabled.

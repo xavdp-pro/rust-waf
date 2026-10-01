@@ -119,6 +119,18 @@ pub struct Exception {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ModuleSpec {
+    pub name: String,
+    pub settings: serde_json::Value,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct SourcedModule {
+    pub profile_id: String,
+    pub layer: Layer,
+    pub settings: serde_json::Value,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     pub schema_version: u32,
     pub profile_id: String,
@@ -139,6 +151,8 @@ pub struct Profile {
     pub exceptions: Vec<Exception>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub modules: Vec<ModuleSpec>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -161,6 +175,7 @@ pub struct EffectivePolicy {
     pub invariants: BTreeSet<String>,
     pub rules: BTreeMap<String, SourcedRule>,
     pub exceptions: Vec<SourcedException>,
+    pub modules: BTreeMap<String, SourcedModule>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -185,6 +200,9 @@ impl Profile {
         if bytes.len() > 1024 * 1024 {
             return invalid("profile exceeds one MiB");
         }
+        // Validate duplicate keys throughout opaque module settings and metadata too.
+        let _: crate::json::StrictJson = serde_json::from_slice(bytes)
+            .map_err(|_| PolicyError("ambiguous or invalid profile JSON".into()))?;
         let profile: Self = serde_json::from_slice(bytes)
             .map_err(|e| PolicyError(format!("invalid profile JSON: {e}")))?;
         if profile.schema_version != 1
@@ -205,6 +223,17 @@ impl Profile {
         }
         if profile.rules.len() > 1024 || profile.exceptions.len() > 1024 {
             return invalid("too many rules or exceptions");
+        }
+        if profile.modules.len() > 32 {
+            return invalid("too many application modules");
+        }
+        for module in &profile.modules {
+            if !identifier(&module.name)
+                || !module.settings.is_object()
+                || profile.layer == Layer::Core
+            {
+                return invalid("invalid application module declaration");
+            }
         }
         for rule in &profile.rules {
             if !identifier(&rule.id)
@@ -281,6 +310,7 @@ pub fn compose(profiles: Vec<Profile>, site_id: &str) -> Result<EffectivePolicy>
     let mut rules = BTreeMap::new();
     let mut exceptions = Vec::new();
     let mut chain = Vec::new();
+    let mut modules = BTreeMap::new();
     for profile in &reverse {
         if profile.layer == Layer::Core && (profile.ui.is_none() || profile.cloudflare.is_none()) {
             return invalid("core must explicitly declare statistics-only and offline API policy");
@@ -311,6 +341,21 @@ pub fn compose(profiles: Vec<Profile>, site_id: &str) -> Result<EffectivePolicy>
                 return invalid("duplicate rule identifier; silent rule overrides are forbidden");
             }
         }
+        for module in &profile.modules {
+            if modules
+                .insert(
+                    module.name.clone(),
+                    SourcedModule {
+                        profile_id: profile.profile_id.clone(),
+                        layer: profile.layer,
+                        settings: module.settings.clone(),
+                    },
+                )
+                .is_some()
+            {
+                return invalid("duplicate module identity; silent module overrides are forbidden");
+            }
+        }
         for exception in &profile.exceptions {
             exceptions.push(SourcedException {
                 profile_id: profile.profile_id.clone(),
@@ -339,6 +384,7 @@ pub fn compose(profiles: Vec<Profile>, site_id: &str) -> Result<EffectivePolicy>
         schema_version: 1,
         fingerprint,
         chain,
+        modules,
         limits,
         invariants,
         rules,

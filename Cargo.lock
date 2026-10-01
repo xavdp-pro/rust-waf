@@ -735,6 +735,21 @@ dependencies = [
  "tokio",
  "uuid",
  "waf-core",
+ "waf-wordpress",
+]
+
+[[package]]
+name = "waf-wordpress"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "multer",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "waf-core",
 ]
 
 [[package]]

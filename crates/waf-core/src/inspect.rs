@@ -48,12 +48,24 @@ fn decode_once(input: &str, plus: bool, strict: bool) -> Result<String> {
     if strict {
         String::from_utf8(out).map_err(|_| error("invalid_utf8_encoding"))
     } else {
-        Ok(String::from_utf8_lossy(&out).to_string())
+        Ok(match String::from_utf8(out) {
+            Ok(text) => text,
+            Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+        })
     }
 }
 fn variants(input: &str, passes: usize, plus: bool, strict: bool) -> Result<Vec<String>> {
-    let mut views = vec![input.to_string()];
+    variants_owned(input.to_owned(), passes, plus, strict)
+}
+fn needs_decode(input: &str, plus: bool) -> bool {
+    input.bytes().any(|b| b == b'%' || (plus && b == b'+'))
+}
+fn variants_owned(input: String, passes: usize, plus: bool, strict: bool) -> Result<Vec<String>> {
+    let mut views = vec![input];
     for pass in 0..passes {
+        if !needs_decode(views.last().unwrap(), plus && pass == 0) {
+            return Ok(views);
+        }
         let decoded = decode_once(
             views.last().unwrap(),
             plus && pass == 0,
@@ -64,28 +76,31 @@ fn variants(input: &str, passes: usize, plus: bool, strict: bool) -> Result<Vec<
         }
         views.push(decoded);
     }
-    if decode_once(views.last().unwrap(), false, false)? != *views.last().unwrap() {
+    if needs_decode(views.last().unwrap(), false)
+        && decode_once(views.last().unwrap(), false, false)? != *views.last().unwrap()
+    {
         return Err(error("encoding_depth_exceeded"));
     }
     Ok(views)
 }
 use crate::json::StrictJson;
-fn json_strings(value: &serde_json::Value, output: &mut Vec<String>) {
+fn json_views(value: serde_json::Value, output: &mut Vec<String>, passes: usize) -> Result<()> {
     match value {
-        serde_json::Value::String(s) => output.push(s.clone()),
+        serde_json::Value::String(s) => output.extend(variants_owned(s, passes, false, false)?),
         serde_json::Value::Array(a) => {
             for v in a {
-                json_strings(v, output)
+                json_views(v, output, passes)?;
             }
         }
         serde_json::Value::Object(o) => {
             for (key, v) in o {
-                output.push(key.clone());
-                json_strings(v, output)
+                output.extend(variants_owned(key, passes, false, false)?);
+                json_views(v, output, passes)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 pub async fn normalize(
@@ -109,8 +124,8 @@ pub async fn normalize(
         return Err(error("ambiguous_path"));
     }
     let queries = variants(query, passes, true, true)?;
-    let raw = String::from_utf8_lossy(&body).to_string();
-    let mut bodies = vec![raw.clone()];
+    let raw = String::from_utf8_lossy(&body).into_owned();
+    let mut bodies;
     let media = content_type
         .split(';')
         .next()
@@ -119,17 +134,15 @@ pub async fn normalize(
         .to_ascii_lowercase();
     // A Content-Type on a bodyless request does not create a JSON document.
     if !body.is_empty() && (media == "application/json" || media.ends_with("+json")) {
+        bodies = vec![raw];
         let parsed: StrictJson =
             serde_json::from_slice(&body).map_err(|_| error("invalid_or_ambiguous_json"))?;
-        let mut strings = Vec::new();
-        json_strings(&parsed.0, &mut strings);
-        for value in strings {
-            bodies.extend(variants(&value, passes, false, false)?);
-        }
+        json_views(parsed.0, &mut bodies, passes)?;
     } else if media == "application/x-www-form-urlencoded" {
-        let text = std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
-        bodies.extend(variants(text, passes, true, true)?);
+        std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
+        bodies = variants_owned(raw, passes, true, true)?;
     } else if media == "multipart/form-data" {
+        bodies = vec![raw];
         let boundary = multer::parse_boundary(content_type)
             .map_err(|_| error("invalid_multipart_boundary"))?;
         if boundary.len() > 70 {
@@ -157,15 +170,15 @@ pub async fn normalize(
                 .bytes()
                 .await
                 .map_err(|_| error("invalid_multipart"))?;
-            bodies.extend(variants(
-                &String::from_utf8_lossy(&value),
+            bodies.extend(variants_owned(
+                String::from_utf8_lossy(&value).into_owned(),
                 passes,
                 false,
                 false,
             )?);
         }
     } else {
-        bodies.extend(variants(&raw, passes, false, false)?);
+        bodies = variants_owned(raw, passes, false, false)?;
     }
     Ok(Views {
         path: paths,

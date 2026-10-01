@@ -238,3 +238,49 @@ fn modules_preserve_provenance_reject_silent_overrides_and_nested_duplicate_keys
     let duplicate=br#"{"schema_version":1,"profile_id":"site","layer":"site","version":"1","extends":"wordpress-base","modules":[{"name":"wordpress-site","settings":{"schema_version":1,"schema_version":2}}]}"#;
     assert!(Profile::parse(duplicate).is_err());
 }
+
+#[test]
+fn nested_field_contract_is_explicit_bounded_and_fingerprinted() {
+    let mut input = profiles();
+    input[0].rules.push(Rule {
+        id: "fixture.nested".into(),
+        targets: vec![Target::Body],
+        pattern: "needle".into(),
+        high_confidence: false,
+    });
+    input[2].exceptions.push(Exception {
+        rule_id: "fixture.nested".into(),
+        path_pattern: "^/form/$".into(),
+        methods: vec!["POST".into()],
+        reason: "Fictional nested scalar consumer".into(),
+        evidence: "nested-origin-contract-tests".into(),
+        form_field: Some("form[fields][1]".into()),
+    });
+    let first = compose(input.clone(), "example-site").unwrap();
+    assert!(
+        first
+            .exception_for("fixture.nested", "/form/", "POST")
+            .is_none()
+    );
+    input.reverse();
+    assert_eq!(
+        first.fingerprint,
+        compose(input.clone(), "example-site").unwrap().fingerprint
+    );
+    input.reverse();
+    input[2].exceptions.last_mut().unwrap().form_field = Some("form[fields][01]".into());
+    assert_ne!(
+        first.fingerprint,
+        compose(input.clone(), "example-site").unwrap().fingerprint
+    );
+    for name in [
+        "form[]",
+        "form[fields][1]ignored",
+        "form[fields][1][",
+        "form[fields][1.0]",
+        "x[a][b][c][d][e][f][g][h]",
+    ] {
+        input[2].exceptions.last_mut().unwrap().form_field = Some(name.into());
+        assert!(compose(input.clone(), "example-site").is_err(), "{name}");
+    }
+}

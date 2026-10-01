@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Canonical nested form origins
+
+The core accepts bounded canonical bracket selectors for original URL-encoded leaf values. Duplicate/ancestor/descendant writes and related malformed paths withhold exceptions; disjoint sibling arrays remain separate. Numeric keys are not coerced. Configured paths affect deterministic fingerprints and never create route-wide exceptions. Application confirmation remains mandatory; the WordPress adapter currently confirms only the explicitly qualified login pwd binding. This source change does not qualify another plugin or implement PHP nested-key normalization.
+
+All 56 Rust semantic cases and 23 neutral HTTP groups pass. New tests cover canonical/encoded nested keys, decoding, siblings, leading-zero keys, duplicate/valueless/ancestor/descendant/append/suffix collisions, metadata bounds and fingerprint/configuration rejection. A neutral protocol group verifies that nested configuration and a forged confirmation header cannot bypass a pre-backend denial. Clippy, formatting, foundation, aggregation and scorer checks pass. Artifact-specific resources, deployment, actual application consumers and browser workflows remain separate requirements. See [the field contract](form-field-origins.md).
+
 ## Unapplied field candidate observability
 
 Optional unapplied_field_profiles record configured profile identities when at least one scoped, adapter-confirmed field occurrence exists but the rule remains unexcepted. A bounded field-range search preserves full haystack anchor/boundary context and detects local occurrences even after an earlier unscoped hit or in a later decoded view. Names, values and match positions are not serialized. Forwarding, effective scopes, confidence and ban eligibility still depend on the existing exception_profile decision.

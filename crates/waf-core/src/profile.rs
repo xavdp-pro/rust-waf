@@ -260,12 +260,12 @@ impl Profile {
                 );
             }
             expression(&exception.path_pattern)?;
-            if exception.form_field.as_ref().is_some_and(|name| {
-                name.is_empty()
-                    || name.len() > 64
-                    || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            }) {
-                return invalid("form field exceptions require a bounded scalar field name");
+            if exception
+                .form_field
+                .as_ref()
+                .is_some_and(|name| crate::form_path::FormPath::parse(name).is_none())
+            {
+                return invalid("form field exceptions require a bounded canonical field path");
             }
             for method in &exception.methods {
                 if !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]

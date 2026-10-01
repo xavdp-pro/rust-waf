@@ -98,6 +98,7 @@ pub enum Target {
     Path,
     Query,
     Body,
+    Headers,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

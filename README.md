@@ -2,7 +2,7 @@
 
 An open-source Rust WAF foundation with a shared engine, a generic WordPress profile, and independently maintained site specializations. Licensed under MIT.
 
-**Current status: Rust profile composition is implemented and tested. HTTP forwarding and inspection are not implemented yet. This repository is not a deployable WAF.**
+**Current status: Rust composition, bounded inspection and a Unix-socket HTTP proxy pass neutral-backend tests. Site protection and laboratory deployment are not yet qualified.**
 
 ## Start here
 
@@ -15,8 +15,8 @@ An open-source Rust WAF foundation with a shared engine, a generic WordPress pro
 ## Repository layout
 
 ```text
-crates/waf-core/         profile composition; application-independent inspection planned
-crates/waf-proxy/        planned HTTP transport and engine integration
+crates/waf-core/         profile composition and bounded application-independent inspection
+crates/waf-proxy/        Unix-socket HTTP gateway and correlated decision records
 profiles/core/          shared design contract
 profiles/wordpress/     generic WordPress design profile
 profiles/sites/         fictional example only

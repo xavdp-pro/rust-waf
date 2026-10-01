@@ -8,6 +8,14 @@ The generic WordPress profile describes REST, AJAX, member login, uploads, metho
 
 A separately maintained site profile declares qualified workflows, endpoints, installed plugins, justified methods, schemas, virtual patches, friend IPs, and ingress mode. Public examples are fictional and do not configure any real deployment.
 
+## Agent-built site specialization
+
+The site profile is authored by an analysis agent for the actual installation. The generic WordPress profile is a starting hypothesis, not a guarantee of behavior. Installed/active plugins, themes and child themes, must-use plugins, drop-ins, rewrite rules, hooks, custom code and modified core can alter request handling, authentication, methods and schemas.
+
+The agent inventories this installation, checks core-file integrity against the exact upstream version when feasible, reads relevant dispatch/authorization code, observes real browser requests and cross-checks server declarations. It records what was observed, inferred or left unqualified. File-integrity checks establish differences; they do not by themselves prove maliciousness or security. Plugin names and source declarations alone cannot qualify a workflow.
+
+The agent then creates a versioned site policy and scoped exceptions with reproducible positive/negative tests. Any plugin/theme/core/configuration change invalidates the affected qualification until reviewed and retested. Unknown changes are surfaced rather than silently adopting generic WordPress assumptions. Site-specific analysis artifacts remain private. The engine remains application-independent; it must not learn site routes by hard-coded changes.
+
 Effective composition must be deterministic and versioned. Exceptions are explicit, tested, and traceable; no implicit weakening of engine invariants. Route filtering does not by itself establish application authorization or object ownership.
 
 ## Target request chain

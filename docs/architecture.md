@@ -18,6 +18,8 @@ The agent then creates a versioned site policy and scoped exceptions with reprod
 
 Effective composition must be deterministic and versioned. Exceptions are explicit, tested, and traceable; no implicit weakening of engine invariants. Route filtering does not by itself establish application authorization or object ownership.
 
+The analysis agent generates deployable policy from this evidence; it does not make live per-request decisions. Each generated rule identifies its layer, installation assumptions and qualification tests. Hooks may change core behavior without modifying core files, so an unchanged core checksum cannot replace runtime workflow checks. Site-specific behavior stays in the private profile; a reusable WordPress capability belongs in the generic profile only after qualification independent of that site. Human interaction remains limited to read-only statistics.
+
 ## Target request chain
 
 ```text

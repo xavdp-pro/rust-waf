@@ -1,6 +1,7 @@
 //! Explicit site-qualified AJAX form consumers; no plugin is enabled by default.
 use super::{Result, bad, clean_path, decode};
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use waf_core::form_path::FormPath;
 
@@ -23,7 +24,12 @@ pub(crate) struct FormConsumer {
     max_input_nesting_level: usize,
     pub(crate) form_field: String,
     guards: Vec<Guard>,
+    #[serde(default = "urlencoded")]
+    media_types: Vec<String>,
     evidence: String,
+}
+fn urlencoded() -> Vec<String> {
+    vec!["application/x-www-form-urlencoded".into()]
 }
 
 impl FormConsumer {
@@ -51,6 +57,13 @@ impl FormConsumer {
             || self.guards.is_empty()
             || self.guards.len() > 8
             || self.max_input_vars < self.guards.len() + 2
+            || self.media_types.is_empty()
+            || self.media_types.len() > 2
+            || self.media_types.iter().collect::<BTreeSet<_>>().len() != self.media_types.len()
+            || self.media_types.iter().any(|media| {
+                !["application/x-www-form-urlencoded", "multipart/form-data"]
+                    .contains(&media.as_str())
+            })
             || self.evidence.trim().is_empty()
             || self.evidence.len() > 4096
         {
@@ -88,7 +101,52 @@ impl FormConsumer {
         Ok(())
     }
 
-    pub(crate) fn confirms(&self, body: &[u8]) -> Result<bool> {
+    pub(crate) fn confirms(
+        &self,
+        body: &[u8],
+        media: &str,
+        content_type: &str,
+        max_parts: usize,
+    ) -> Result<bool> {
+        if !self.media_types.iter().any(|allowed| allowed == media) {
+            return Ok(false);
+        }
+        if media == "multipart/form-data" {
+            let Some(boundary) = waf_core::multipart_origin::qualified_boundary(content_type)
+            else {
+                return Ok(false);
+            };
+            let Some(parts) = waf_core::multipart_origin::layout(body, &boundary, max_parts) else {
+                return Ok(false);
+            };
+            return self.binds(
+                parts.iter().map(|part| {
+                    (
+                        part.name.as_bytes(),
+                        Some(&body[part.value.clone()]),
+                        part.is_file,
+                    )
+                }),
+                false,
+            );
+        }
+        self.binds(
+            body.split(|byte| *byte == b'&').map(|pair| {
+                let (key, value) = pair
+                    .iter()
+                    .position(|byte| *byte == b'=')
+                    .map_or((pair, None), |i| (&pair[..i], Some(&pair[i + 1..])));
+                (key, value, false)
+            }),
+            true,
+        )
+    }
+
+    fn binds<'a>(
+        &self,
+        fields: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>, bool)>,
+        encoded: bool,
+    ) -> Result<bool> {
         // Metadata is bounded by the declared field, action and <=8 guards.
         // Values for the content field are never decoded or retained here.
         let mut names = vec![self.form_field.as_str(), "action"];
@@ -98,21 +156,20 @@ impl FormConsumer {
             .map(|name| FormPath::parse(name).unwrap())
             .collect::<Vec<_>>();
         let mut present = vec![false; names.len()];
-        for (count, pair) in body.split(|byte| *byte == b'&').enumerate() {
+        for (count, (key, value, file)) in fields.enumerate() {
             if count >= self.max_input_vars {
                 return Ok(false);
             }
-            let (key, value) = pair
-                .iter()
-                .position(|byte| *byte == b'=')
-                .map_or((pair, None), |i| (&pair[..i], Some(&pair[i + 1..])));
             if key.len() > 192 {
                 return Ok(false);
             }
-            let key = decode(
-                std::str::from_utf8(key).map_err(|_| bad("wordpress_invalid_form_key"))?,
-                true,
-            )?;
+            let raw_key =
+                std::str::from_utf8(key).map_err(|_| bad("wordpress_invalid_form_key"))?;
+            let key = if encoded {
+                Cow::Owned(decode(raw_key, true)?)
+            } else {
+                Cow::Borrowed(raw_key)
+            };
             // A strict canonical tree avoids PHP root normalization, NUL,
             // ignored suffixes and append-index ambiguities. Unsupported keys
             // withhold confirmation; they do not themselves deny forwarding.
@@ -122,12 +179,19 @@ impl FormConsumer {
             if candidate.segments().len() - 1 > self.max_input_nesting_level {
                 return Ok(false);
             }
+            // File parts populate $_FILES and cannot select a POST consumer.
+            if file {
+                continue;
+            }
             for (index, selected) in paths.iter().enumerate() {
                 if key == names[index] {
                     if present[index] || value.is_none() {
                         return Ok(false);
                     }
                     present[index] = true;
+                    if index == 0 && !encoded && std::str::from_utf8(value.unwrap()).is_err() {
+                        return Ok(false);
+                    }
                     if index > 0 {
                         let expected = if index == 1 {
                             &self.action
@@ -135,13 +199,17 @@ impl FormConsumer {
                             &self.guards[index - 2].equals
                         };
                         let value = value.unwrap();
-                        if value.len() > 768
-                            || decode(
-                                std::str::from_utf8(value)
-                                    .map_err(|_| bad("wordpress_invalid_dispatch_value"))?,
-                                true,
-                            )? != *expected
-                        {
+                        if value.len() > 768 {
+                            return Ok(false);
+                        }
+                        let raw_value = std::str::from_utf8(value)
+                            .map_err(|_| bad("wordpress_invalid_dispatch_value"))?;
+                        let value = if encoded {
+                            Cow::Owned(decode(raw_value, true)?)
+                        } else {
+                            Cow::Borrowed(raw_value)
+                        };
+                        if value.as_ref() != expected {
                             return Ok(false);
                         }
                     }

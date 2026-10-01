@@ -6,4 +6,5 @@ mod form_scan;
 pub mod inspect;
 mod json;
 mod json_scan;
+pub mod multipart_origin;
 pub mod profile;

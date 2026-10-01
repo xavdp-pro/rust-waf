@@ -715,3 +715,253 @@ fn ajax_form_consumer_invalid_contracts_fail_startup() {
         .push(consumer);
     rejects(duplicate);
 }
+
+fn multipart_settings() -> serde_json::Value {
+    let mut settings = form_settings();
+    settings["form_consumers"][0]["media_types"] =
+        json!(["application/x-www-form-urlencoded", "multipart/form-data"]);
+    settings
+}
+fn multipart_request(parts: &[(&str, Option<&str>, &[u8])]) -> Request<'static> {
+    let mut input = request("/wp-admin/admin-ajax.php", "", "POST");
+    input.content_type = "multipart/form-data; boundary=fixture-multipart";
+    let mut body = Vec::new();
+    for (name, file, value) in parts {
+        body.extend_from_slice(
+            format!("--fixture-multipart\r\nContent-Disposition: form-data; name=\"{name}\"")
+                .as_bytes(),
+        );
+        if let Some(file) = file {
+            body.extend_from_slice(format!("; filename=\"{file}\"").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(value);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--fixture-multipart--\r\n");
+    input.body = Bytes::from(body);
+    input
+}
+#[tokio::test]
+async fn multipart_ajax_consumer_requires_explicit_media_and_literal_post_identity() {
+    let parts = [
+        ("action", None, b"fixture_submit".as_slice()),
+        ("form[id]", None, b"17".as_slice()),
+        ("form[fields][1]", None, b"literal".as_slice()),
+    ];
+    let default = wordpress(form_settings());
+    assert!(
+        default
+            .analyze(multipart_request(&parts))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    let wp = wordpress(multipart_settings());
+    let context = wp.analyze(multipart_request(&parts)).await.unwrap();
+    assert_eq!(context.confirmed_fields, ["form[fields][1]"]);
+    assert_eq!(context.consumer_profile.as_deref(), Some("fictional-site"));
+    assert!(!serde_json::to_string(&context).unwrap().contains("literal"));
+    for header in [
+        "multipart/form-data; boundary=fixture-multipart; charset=utf-8",
+        "multipart/form-data; boundary=fixture-multipart; boundary=fixture-multipart",
+    ] {
+        let mut ambiguous = multipart_request(&parts);
+        ambiguous.content_type = header;
+        assert!(
+            wp.analyze(ambiguous)
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+    let mut changed = parts;
+    changed[1].2 = b"%31%37";
+    assert!(
+        wp.analyze(multipart_request(&changed))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    changed = parts;
+    changed[2].0 = "%66orm[fields][1]";
+    assert!(
+        wp.analyze(multipart_request(&changed))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    let mut settings = multipart_settings();
+    settings["form_consumers"][0]["media_types"] = json!(["multipart/form-data"]);
+    assert!(
+        wordpress(settings)
+            .analyze(form_request(
+                "action=fixture_submit&form[id]=17&form[fields][1]=literal"
+            ))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+}
+#[tokio::test]
+async fn multipart_ajax_files_tree_collisions_and_unsupported_headers_withhold_bindings() {
+    let wp = wordpress(multipart_settings());
+    let base = [
+        ("action", None, b"fixture_submit".as_slice()),
+        ("form[id]", None, b"17".as_slice()),
+        ("form[fields][1]", None, b"literal".as_slice()),
+    ];
+    let mut file = base;
+    file[2].1 = Some("file.txt");
+    assert!(
+        wp.analyze(multipart_request(&file))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    file = base;
+    file[1].1 = Some("guard.txt");
+    assert!(
+        wp.analyze(multipart_request(&file))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    file = base;
+    file[0].1 = Some("action.txt");
+    assert!(
+        wp.analyze(multipart_request(&file))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    for name in [
+        "form",
+        "form[fields]",
+        "form[fields][1]",
+        "form[fields][1][child]",
+        "form[fields][1]ignored",
+        " form[fields][1]",
+        "form[fields][]",
+        "form[id]",
+    ] {
+        let mut parts = base.to_vec();
+        parts.push((name, None, b"other"));
+        assert!(
+            wp.analyze(multipart_request(&parts))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty(),
+            "{name}"
+        );
+    }
+    let mut parts = base.to_vec();
+    parts.push(("upload", Some("file.bin"), b"\xff"));
+    assert_eq!(
+        wp.analyze(multipart_request(&parts))
+            .await
+            .unwrap()
+            .confirmed_fields,
+        ["form[fields][1]"]
+    );
+    let mut unsupported = multipart_request(&base);
+    unsupported.body = Bytes::from(
+        String::from_utf8(unsupported.body.to_vec())
+            .unwrap()
+            .replace("\r\n\r\n", "\r\nX-Fixture: unsupported\r\n\r\n"),
+    );
+    assert!(
+        wp.analyze(unsupported)
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    let mut binary = base;
+    binary[2].2 = b"\xffliteral";
+    assert!(
+        wp.analyze(multipart_request(&binary))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    let mut method = multipart_request(&base);
+    method.wire_method = "PUT";
+    assert!(
+        wp.analyze(method)
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+    let mut query = multipart_request(&base);
+    query.query = "action=fixture_submit";
+    assert!(wp.analyze(query).await.unwrap().confirmed_fields.is_empty());
+}
+#[test]
+fn multipart_media_contract_is_bounded_explicit_and_fingerprinted() {
+    use waf_core::profile::{Layer, Profile, SourcedModule, compose};
+    let parse = |settings: serde_json::Value| {
+        Wordpress::from_modules(&BTreeMap::from([
+            (
+                "wordpress".into(),
+                SourcedModule {
+                    profile_id: "wordpress-base".into(),
+                    layer: Layer::Application,
+                    settings: json!({"schema_version":1}),
+                },
+            ),
+            (
+                "wordpress-site".into(),
+                SourcedModule {
+                    profile_id: "fictional-site".into(),
+                    layer: Layer::Site,
+                    settings,
+                },
+            ),
+        ]))
+    };
+    for media in [
+        json!([]),
+        json!(["application/json"]),
+        json!(["MULTIPART/FORM-DATA"]),
+        json!(["multipart/form-data", "multipart/form-data"]),
+        json!([
+            "multipart/form-data",
+            "application/x-www-form-urlencoded",
+            "text/plain"
+        ]),
+    ] {
+        let mut settings = form_settings();
+        settings["form_consumers"][0]["media_types"] = media;
+        assert!(parse(settings).is_err());
+    }
+    let mut profiles = [
+        include_bytes!("../../../profiles/core/base.json").as_slice(),
+        include_bytes!("../../../profiles/wordpress/base.json").as_slice(),
+        include_bytes!("../../../profiles/sites/example.json").as_slice(),
+    ]
+    .into_iter()
+    .map(|data| Profile::parse(data).unwrap())
+    .collect::<Vec<_>>();
+    profiles[2].modules.push(waf_core::profile::ModuleSpec {
+        name: "wordpress-site".into(),
+        settings: form_settings(),
+    });
+    let first = compose(profiles.clone(), "example-site").unwrap();
+    profiles[2].modules.last_mut().unwrap().settings = multipart_settings();
+    assert_ne!(
+        first.fingerprint,
+        compose(profiles, "example-site").unwrap().fingerprint
+    );
+}

@@ -485,3 +485,274 @@ async fn nested_alias_ancestor_descendant_and_sibling_hits_withhold_exceptions()
             .is_none()
     );
 }
+
+fn multipart(parts: &[(&str, Option<&str>, &[u8])]) -> Bytes {
+    let mut body = Vec::new();
+    for (name, filename, value) in parts {
+        body.extend_from_slice(
+            format!("--fixture-boundary\r\nContent-Disposition: form-data; name=\"{name}\"")
+                .as_bytes(),
+        );
+        if let Some(filename) = filename {
+            body.extend_from_slice(format!("; filename=\"{filename}\"").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n\r\n");
+        body.extend_from_slice(value);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--fixture-boundary--\r\n");
+    Bytes::from(body)
+}
+async fn scan_multipart(i: &Inspector, parts: &[(&str, Option<&str>, &[u8])]) -> ScannedRequest {
+    i.scan(
+        "/form/",
+        "",
+        "multipart/form-data; boundary=fixture-boundary",
+        multipart(parts),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn multipart_leaf_origins_preserve_decoded_values_unicode_and_binary_prefix_offsets() {
+    let i = inspector("needle");
+    for value in [
+        b"needle".as_slice(),
+        b"nee%2564le",
+        b"before%26other%3Dneedle",
+        "€needle€".as_bytes(),
+    ] {
+        let request = scan_multipart(
+            &i,
+            &[
+                ("upload", Some("file;name.bin"), b"\xff\xf0\x9f"),
+                ("secret", None, value),
+                ("other", None, b"benign"),
+            ],
+        )
+        .await;
+        assert_excepted(&i, &request, true);
+        assert!(
+            i.inspect_scanned(&request, "POST")[0]
+                .exception_profile
+                .is_none()
+        );
+        assert!(
+            i.inspect_scanned_with_fields(&request, "GET", &["secret"])[0]
+                .exception_profile
+                .is_none()
+        );
+    }
+    let i = nested_inspector();
+    let request = scan_multipart(
+        &i,
+        &[
+            ("form[fields][1]", None, b"needle"),
+            ("form[fields][01]", None, b"benign"),
+        ],
+    )
+    .await;
+    assert!(
+        i.inspect_scanned_with_fields(&request, "POST", &["form[fields][1]"])[0]
+            .exception_profile
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn multipart_duplicates_files_names_headers_and_siblings_never_borrow_leaf_origins() {
+    let i = inspector("needle");
+    for parts in [
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("secret", None, b"benign"),
+        ],
+        vec![
+            ("secret", None, b"benign".as_slice()),
+            ("secret", None, b"needle"),
+        ],
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("secret[child]", None, b"benign"),
+        ],
+        vec![("secret", Some("file.bin"), b"needle".as_slice())],
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("file", Some("file.bin"), b"needle"),
+        ],
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("other", None, b"needle"),
+        ],
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("needle", None, b"benign"),
+        ],
+        vec![
+            ("secret", None, b"needle".as_slice()),
+            ("file", Some("needle.bin"), b"benign"),
+        ],
+        vec![("%73ecret", None, b"needle".as_slice())],
+        vec![("secret", None, b"\xffneedle".as_slice())],
+    ] {
+        assert_excepted(&i, &scan_multipart(&i, &parts).await, false);
+    }
+    let mut body = multipart(&[("secret", None, b"needle")]).to_vec();
+    let marker = b"\r\n\r\n";
+    let at = body
+        .windows(marker.len())
+        .position(|bytes| bytes == marker)
+        .unwrap();
+    body.splice(at..at, b"\r\nX-Fixture: needle".iter().copied());
+    let request = i
+        .scan(
+            "/form/",
+            "",
+            "multipart/form-data; boundary=fixture-boundary",
+            Bytes::from(body),
+        )
+        .await
+        .unwrap();
+    assert_excepted(&i, &request, false);
+}
+
+#[tokio::test]
+async fn multipart_nested_tree_writes_and_unsupported_headers_withhold_confirmation() {
+    let i = nested_inspector();
+    for name in [
+        "form",
+        "form[fields]",
+        "form[fields][1][child]",
+        "form[fields][1]ignored",
+        "form[fields][]",
+    ] {
+        for before in [true, false] {
+            let selected = ("form[fields][1]", None, b"needle".as_slice());
+            let conflicting = (name, None, b"benign".as_slice());
+            let parts = if before {
+                vec![conflicting, selected]
+            } else {
+                vec![selected, conflicting]
+            };
+            let request = scan_multipart(&i, &parts).await;
+            assert!(
+                i.inspect_scanned_with_fields(&request, "POST", &["form[fields][1]"])[0]
+                    .exception_profile
+                    .is_none(),
+                "{name}"
+            );
+        }
+    }
+    let i = inspector("needle");
+    for extra in [
+        "\r\nX-Fixture: benign",
+        "\r\nContent-Transfer-Encoding: binary",
+    ] {
+        let body = String::from_utf8(multipart(&[("secret", None, b"needle")]).to_vec())
+            .unwrap()
+            .replace("\r\n\r\n", &format!("{extra}\r\n\r\n"));
+        let request = i
+            .scan(
+                "/form/",
+                "",
+                "multipart/form-data; boundary=fixture-boundary",
+                Bytes::from(body),
+            )
+            .await
+            .unwrap();
+        assert_excepted(&i, &request, false);
+    }
+}
+
+#[tokio::test]
+async fn multipart_match_hulls_truncation_and_part_limits_preserve_complete_validation() {
+    for pattern in [
+        "(?s)needle.*Content-Disposition",
+        "(?s)needle|needle.*Content-Disposition",
+    ] {
+        let i = inspector(pattern);
+        let request = scan_multipart(
+            &i,
+            &[("secret", None, b"needle"), ("other", None, b"benign")],
+        )
+        .await;
+        assert_excepted(&i, &request, false);
+    }
+    let i = inspector("needle");
+    let body = multipart(&[("secret", None, b"needle"), ("other", None, b"benign")]);
+    let truncated = body.slice(..body.len() - 10);
+    assert!(
+        i.scan(
+            "/form/",
+            "",
+            "multipart/form-data; boundary=fixture-boundary",
+            truncated
+        )
+        .await
+        .is_err()
+    );
+    let mut policy = i.policy.clone();
+    policy.limits.multipart_parts = 1;
+    let bounded = Inspector::new(policy).unwrap();
+    assert!(
+        bounded
+            .scan(
+                "/form/",
+                "",
+                "multipart/form-data; boundary=fixture-boundary",
+                body
+            )
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn multipart_multiple_leaves_require_independent_confirmations_and_keep_candidates() {
+    let mut policy = inspector("needle").policy;
+    let mut extra = policy.exceptions[0].clone();
+    extra.exception.form_field = Some("other".into());
+    policy.exceptions.push(extra);
+    let i = Inspector::new(policy).unwrap();
+    let request = scan_multipart(
+        &i,
+        &[("secret", None, b"needle"), ("other", None, b"nee%2564le")],
+    )
+    .await;
+    assert!(
+        i.inspect_scanned_with_fields(&request, "POST", &["secret", "other"])[0]
+            .exception_profile
+            .is_some()
+    );
+    let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret"]);
+    assert!(hits[0].exception_profile.is_none());
+    assert_eq!(hits[0].unapplied_field_profiles, ["example-site"]);
+    let request = scan_multipart(
+        &i,
+        &[
+            ("secret", None, b"needle"),
+            ("other", None, b"needle"),
+            ("file", Some("file.bin"), b"needle"),
+        ],
+    )
+    .await;
+    let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret", "other"]);
+    assert!(hits[0].exception_profile.is_none());
+    assert_eq!(hits[0].unapplied_field_profiles, ["example-site"]);
+}
+
+#[tokio::test]
+async fn multipart_extra_media_parameters_cannot_grant_field_exceptions() {
+    let i = inspector("needle");
+    let request = i
+        .scan(
+            "/form/",
+            "",
+            "multipart/form-data; boundary=fixture-boundary; charset=utf-8",
+            multipart(&[("secret", None, b"needle")]),
+        )
+        .await
+        .unwrap();
+    assert_excepted(&i, &request, false);
+}

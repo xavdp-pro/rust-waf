@@ -141,9 +141,10 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
+        if gate:config['ban_lookup_socket']=str(self.tmp/(name+'-lookup.sock'))
         config['mode']=mode
         config['bans']={'threshold':2,'window_seconds':10,'duration_seconds':1,'max_entries':16}
         core=json.loads((ROOT/'profiles/core/base.json' if common else self.tmp/'core.json').read_text())
@@ -168,7 +169,7 @@ class Transport(unittest.TestCase):
             process=subprocess.Popen([BINARY,str(config_path)],stdout=out,stderr=subprocess.PIPE)
             try:
                 for _ in range(300):
-                    if pathlib.Path(config['listen_socket']).exists():break
+                    if pathlib.Path(config['listen_socket']).exists() and (not gate or pathlib.Path(config['ban_lookup_socket']).exists()):break
                     if process.poll() is not None:raise RuntimeError(process.stderr.read().decode())
                     time.sleep(.01)
                 else:raise RuntimeError('Alternate listener not ready')
@@ -308,6 +309,43 @@ class Transport(unittest.TestCase):
             event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
             self.assertEqual(event['application']['effective_method'],'DELETE')
             self.assertIsNone(event['matches'][0]['exception_profile'])
+    def test_15_read_only_ban_gate_shares_state_and_expiry(self):
+        with self.alternate_proxy('early-gate',reliable=True,gate=True) as (path,events):
+            gate=self.tmp/'early-gate-lookup.sock'
+            before=len(self.received)
+            lookup=lambda **kw:self.request(method='GET',path='/',body=b'',socket_path=gate,**kw)
+            self.assertEqual(lookup()[0],204)
+            self.assertEqual(events.read_text(),'')
+            for _ in range(2):self.assertEqual(self.request(body=b'forbidden-sentinel',socket_path=path)[0],403)
+            status,headers,body=lookup()
+            self.assertEqual(status,403);self.assertEqual(body,b'');self.assertIn('retry-after',headers)
+            self.assertEqual(len(self.received),before)
+            records=[json.loads(line) for line in events.read_text().splitlines()]
+            blocked=next(r for r in records if r['request_id']==headers['x-request-id'])
+            self.assertEqual(blocked['reason'],'temporary_local_ban_early')
+            self.assertFalse(blocked['backend_attempted']);self.assertFalse(blocked['ban_started'])
+            self.assertEqual(lookup(headers={'X-Waf-Admin-Friend':'1'})[0],204)
+            self.assertEqual(lookup(headers={'X-Waf-Client-IP':'198.51.100.26'})[0],204)
+            self.assertEqual(self.request(socket_path=path)[0],429)
+            time.sleep(1.1)
+            self.assertEqual(lookup()[0],204)
+            self.assertEqual(self.request(socket_path=path)[0],200)
+    def test_16_ban_gate_has_no_forward_or_mutation_endpoint(self):
+        with self.alternate_proxy('gate-boundaries',gate=True) as (_,events):
+            gate=self.tmp/'gate-boundaries-lookup.sock'
+            before=len(self.received)
+            for case in [{'method':'POST','path':'/'},{'method':'GET','path':'/forward'},
+                         {'method':'GET','path':'/','headers':{'X-Waf-Client-IP':'invalid'}},
+                         {'method':'GET','path':'/','body':b'declared-body'}]:
+                values={'method':'GET','path':'/','body':b'','socket_path':gate};values.update(case)
+                self.assertEqual(self.request(**values)[0],400)
+            self.assertEqual(len(self.received),before)
+            self.assertEqual(self.request(method='GET',path='/',body=b'',socket_path=gate)[0],204)
+            # The declared original body must not be awaited at this lookup socket.
+            sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);sock.settimeout(.8);sock.connect(str(gate))
+            sock.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nX-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nContent-Length: 1000000\r\n\r\n')
+            self.assertIn(b'400',sock.recv(8192).split(b'\r\n')[0]);sock.close()
+            self.assertEqual(len(self.received),before)
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

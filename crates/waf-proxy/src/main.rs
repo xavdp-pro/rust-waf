@@ -1,4 +1,5 @@
 //! Private-socket HTTP gateway. The backend URI always uses a fixed destination.
+mod ban_gate;
 mod ingress;
 use axum::{
     body::{Body, to_bytes},
@@ -40,6 +41,8 @@ enum Mode {
 struct Config {
     listen_socket: PathBuf,
     backend_socket: PathBuf,
+    #[serde(default)]
+    ban_lookup_socket: Option<PathBuf>,
     site_id: String,
     profiles: Vec<PathBuf>,
     mode: Mode,
@@ -468,6 +471,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         || config.listen_socket == config.backend_socket
         || !config.listen_socket.is_absolute()
         || !config.backend_socket.is_absolute()
+        || config.ban_lookup_socket.as_ref().is_some_and(|path| {
+            !path.is_absolute() || path == &config.listen_socket || path == &config.backend_socket
+        })
     {
         return Err("invalid runtime bounds or socket paths".into());
     }
@@ -483,6 +489,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = UnixListener::bind(&config.listen_socket)?;
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&config.listen_socket, fs::Permissions::from_mode(0o660))?;
+    let gate_listener = config
+        .ban_lookup_socket
+        .as_ref()
+        .map(|path| {
+            let listener = UnixListener::bind(path)?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
+            Ok::<_, io::Error>(listener)
+        })
+        .transpose()?;
     let app = Arc::new(App {
         bans,
         wordpress,
@@ -490,11 +505,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
         inspector,
     });
+    let mut gate_task =
+        gate_listener.map(|listener| tokio::spawn(ban_gate::serve(listener, app.clone())));
     let connections = Arc::new(Semaphore::new(app.config.max_concurrent));
     loop {
         let (mut stream, _) = tokio::select! {
             result = listener.accept() => result?,
             _ = tokio::signal::ctrl_c() => break,
+            _ = async {
+                if let Some(task) = &mut gate_task { let _ = task.await; }
+                else { std::future::pending::<()>().await; }
+            } => return Err("ban gate listener terminated".into()),
         };
         let app = app.clone();
         let Ok(permit) = connections.clone().try_acquire_owned() else {

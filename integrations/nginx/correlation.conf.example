@@ -1,10 +1,16 @@
-# http{} context. A gateway response ID correlates origin, gateway, backend and PHP.
-map $upstream_http_x_request_id $waf_correlation_id {
+# http{} context. Define $waf_early_request_id with the ban-access include.
+# Without early lookups, replace the first map's default with an empty string.
+map $upstream_http_x_request_id $waf_selected_id {
     "~^[a-f0-9]{32}$" $upstream_http_x_request_id;
+    default $waf_early_request_id;
+}
+map $waf_selected_id $waf_correlation_id {
+    "~^[a-f0-9]{32}$" $waf_selected_id;
     default $request_id;
 }
 log_format waf_backend escape=json
     '{"id":"$http_x_request_id","status":$status,"php":"$upstream_addr","seconds":$request_time}';
 # Add X-Request-ID $waf_correlation_id always in the PUBLIC server. The proxy
 # include hides its upstream copy, preventing duplicate response headers.
+# Optionally add Retry-After $waf_ban_retry_after always in the public server.
 # Generate private logs without query strings, bodies, cookies or client IPs.

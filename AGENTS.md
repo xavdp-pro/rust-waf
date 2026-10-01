@@ -8,6 +8,7 @@ Read README.md, docs/status.md, docs/architecture.md, and docs/roadmap.md before
 - This public repository owns the first two layers and fictional examples only. Never import real site profiles, operational inventories, private installation information, or deployment history.
 - No WAF control UI. Only useful read-only statistics.
 - Do not hard-code site routes or deployment/network dependencies into the engine.
+- A site-analysis agent derives private policies from the actual plugin/theme/core behavior, including custom modifications. Generic WordPress behavior is a starting hypothesis, not installation proof.
 - Site exceptions must be explicit, versioned, tested, and observable. They must not silently disable core invariants.
 - Preserve legitimate member login, AJAX/REST, and justified methods. Unobserved routes are unqualified, not automatically forbidden. DELETE can legitimately remove a cart item.
 - Reuse Nginx static/transport features and its internal FastCGI bridge to PHP-FPM. No public backend bypass; fail closed for dynamic forwarding when the WAF is unavailable.
@@ -17,7 +18,7 @@ Read README.md, docs/status.md, docs/architecture.md, and docs/roadmap.md before
 
 ## Evidence and publication
 
-Rust profile composition exists; transport and request inspection are not yet implemented. Do not claim protection or complete qualification from configuration, status codes, source declarations, or synthetic fixtures alone. Separate observation, independently labeled decisions, backend proof, and actual user workflows. Missing metrics remain absent.
+Rust composition and transport/inspection exist with neutral-backend tests. WordPress specialization and deployment remain unqualified. Do not claim protection or complete qualification from configuration, status codes, source declarations, or synthetic fixtures alone. Separate observation, independently labeled decisions, backend proof, and actual user workflows. Missing metrics remain absent.
 
 This repository is public. Never commit credentials, keys, tokens, database dumps, customer data, cookies, sessions, real access inventories, raw logs, or site-specific exceptions. Use fictional fixtures. A reusable tool must not contain private deployment names or paths. Public publication does not authorize any deployment.
 

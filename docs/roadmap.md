@@ -2,11 +2,11 @@
 
 ## Step 01 — Contracts and composition
 
-Profile composition is implemented with eight passing integration tests; the request event format is pending transport implementation. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
+Profile composition is implemented with eight passing integration tests; schema-v1 body-free decision records are implemented with the proxy. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
 
 ## Step 02 — Rust proxy and neutral test backend
 
-Implement transport, normalization, complete-body limits/inspection, and a neutral backend. Acceptance: encoding/multipart/ambiguity tests, consistent parsing across Nginx/Rust, correlation, fail-closed behavior, and backend non-execution after a denial.
+Unix HTTP transport, complete-body inspection and neutral-backend protocol evidence are implemented. Nginx parser consistency and additional adversarial cases remain pending. Implement transport, normalization, complete-body limits/inspection, and a neutral backend. Acceptance: encoding/multipart/ambiguity tests, consistent parsing across Nginx/Rust, correlation, fail-closed behavior, and backend non-execution after a denial.
 
 ## Step 03 — Common rules and labeled corpus
 
@@ -20,7 +20,7 @@ Qualify REST, AJAX, login, uploads, roles, methods, and optional plugin modules.
 
 Integrate the isolated Nginx FastCGI backend, read-only statistics, ingress adapters, and bounded temporary bans. Acceptance: no bypass, correct stop behavior, friend-IP cases, comparable baseline/protected load tests, latency/throughput/error/resource measurements, and correlated non-execution proof. No per-attack Cloudflare API calls.
 
-Site qualification and private profiles are owned by their deployers and maintained separately. Public steps are not completed by this initial documentation alone.
+Site qualification and private profiles are owned by their deployers and maintained separately. An analysis agent builds each site layer from actual installed plugins/themes, custom code, core differences and observed behavior, then tests the resulting policy. Changes to those components require targeted requalification. Public steps are not completed by this initial documentation alone.
 
 Use short-lived branches when each step starts: `step-01/profile-contracts`, `step-02/http-proxy`, `step-03/common-rules`, `step-04/wordpress-profile`, `step-05/integration-proof`. Do not create empty permanent layer branches.
 

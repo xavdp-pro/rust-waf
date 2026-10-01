@@ -2,7 +2,7 @@
 
 ## Step 01 — Contracts and composition
 
-Profile composition is implemented with eight passing integration tests; schema-v1 body-free decision records are implemented with the proxy. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
+Profile composition is implemented with nine passing integration tests; schema-v1 body-free decision records are implemented with the proxy. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
 
 ## Step 02 — Rust proxy and neutral test backend
 
@@ -18,7 +18,7 @@ Dispatch, effective methods, administration trust and evidence-bearing site meth
 
 ## Step 05 — Integration and reusable evidence
 
-The bounded local ban table and early proxy check are implemented and tested. Nginx early rejection, the FastCGI backend, actual statistics integration and deployment proof are pending. Integrate the isolated Nginx FastCGI backend, read-only statistics, ingress adapters, and bounded temporary bans. Acceptance: no bypass, correct stop behavior, friend-IP cases, comparable baseline/protected load tests, latency/throughput/error/resource measurements, and correlated non-execution proof. No per-attack Cloudflare API calls.
+The bounded local ban table and early proxy check are implemented and tested. Reusable dynamic proxy/FastCGI bridge/service/correlation examples and body-free read-only event aggregation are implemented. Nginx early rejection, independent performance and per-installation acceptance remain pending. Integrate the isolated Nginx FastCGI backend, read-only statistics, ingress adapters, and bounded temporary bans. Acceptance: no bypass, correct stop behavior, friend-IP cases, comparable baseline/protected load tests, latency/throughput/error/resource measurements, and correlated non-execution proof. No per-attack Cloudflare API calls.
 
 Site qualification and private profiles are owned by their deployers and maintained separately. An analysis agent builds each site layer from actual installed plugins/themes, custom code, core differences and observed behavior, then tests the resulting policy. Changes to those components require targeted requalification. Public steps are not completed by this initial documentation alone.
 

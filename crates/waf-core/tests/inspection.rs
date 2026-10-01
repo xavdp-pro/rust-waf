@@ -112,6 +112,8 @@ async fn benign_text_and_php_array_form_fields_are_preserved() {
             "items[]=one&items[]=two&text=hello+world",
         ),
         ("text/plain", "A sale of 20% is fine."),
+        ("application/json", ""),
+        ("application/problem+json", ""),
     ] {
         let views = normalize(&i.policy, "/form/", "", kind, Bytes::from(body))
             .await

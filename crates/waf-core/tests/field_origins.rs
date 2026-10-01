@@ -258,3 +258,92 @@ async fn query_headers_other_media_and_route_scope_remain_independent() {
         );
     }
 }
+
+fn multiple_inspector(pattern: &str) -> Inspector {
+    let mut policy = inspector(pattern).policy;
+    let mut second = policy.exceptions[0].clone();
+    second.exception.form_field = Some("content".into());
+    policy.exceptions.push(second);
+    Inspector::new(policy).unwrap()
+}
+
+#[tokio::test]
+async fn multiple_fields_need_separate_confirmed_scopes_for_every_view() {
+    let i = multiple_inspector("needle");
+    for body in [
+        "secret=needle&content=needle",
+        "content=nee%2564le&secret=needle",
+        "secret=needle&content=needle&other=benign",
+        "content=%E2%82%AC+needle&secret=needle",
+    ] {
+        let request = scan(&i, body).await;
+        let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"]);
+        assert_eq!(hits[0].exception_profile.as_deref(), Some("example-site"));
+        assert!(
+            i.inspect_scanned_with_fields(&request, "POST", &["secret"])[0]
+                .exception_profile
+                .is_none()
+        );
+        assert!(
+            i.inspect_scanned_with_fields(&request, "POST", &["content"])[0]
+                .exception_profile
+                .is_none()
+        );
+        assert!(
+            i.inspect_scanned_with_fields(&request, "GET", &["secret", "content"])[0]
+                .exception_profile
+                .is_none()
+        );
+    }
+    for body in [
+        "secret=needle&content=needle&other=needle",
+        "other=needle&secret=needle&content=needle",
+        "secret=needle&content=needle&content=benign",
+        "secret=needle&content=needle&%63ontent=benign",
+    ] {
+        let request = scan(&i, body).await;
+        assert!(
+            i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"])[0]
+                .exception_profile
+                .is_none()
+        );
+    }
+    let mut policy = i.policy;
+    policy.exceptions[1].exception.methods = vec!["PUT".into()];
+    let i = Inspector::new(policy).unwrap();
+    let request = scan(&i, "secret=needle&content=needle").await;
+    assert!(
+        i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"])[0]
+            .exception_profile
+            .is_none()
+    );
+    assert!(
+        i.inspect_scanned_with_fields(&request, "PUT", &["secret", "content"])[0]
+            .exception_profile
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn all_alternatives_and_cross_field_matches_remain_unexcepted() {
+    for pattern in [
+        "needle|needle&content=needle",
+        "needle|dle&content",
+        "needle.*needle",
+        "needle.*?needle",
+        "needle.*",
+    ] {
+        let i = multiple_inspector(pattern);
+        let request = scan(&i, "secret=needle&content=needle").await;
+        let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"]);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].exception_profile.is_none(), "{pattern}");
+    }
+    let i = multiple_inspector(r"\bneedle\b");
+    let request = scan(&i, "secret=needle&content=needle").await;
+    assert!(
+        i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"])[0]
+            .exception_profile
+            .is_some()
+    );
+}

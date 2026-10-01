@@ -142,7 +142,10 @@ class Transport(unittest.TestCase):
         for case in cases:
             self.assertEqual(self.assert_denied_before_backend(**case),403)
     def test_03_body_limits_and_parse_ambiguity(self):
-        cases=[{'body':b'a'*32769}, {'body':b'{"x":1,"x":2}','headers':{'Content-Type':'application/json'}},
+        # The declared limit is rejected before the body is read. Announce it
+        # without sending bytes: sending the entire oversized body can race the
+        # server's early close and fail in the client's sendall instead.
+        cases=[{'body':b'','headers':{'Content-Length':'32769'}}, {'body':b'{"x":1,"x":2}','headers':{'Content-Type':'application/json'}},
                {'body':b'broken','headers':{'Content-Type':'multipart/form-data; boundary=bound'}},
                {'path':'/a/%252e%252e/b'}, {'headers':{'Content-Encoding':'gzip'}},
                {'headers':{'X-Waf-Client-IP':'invalid'}}, {'method':'TRACE'}]
@@ -159,7 +162,7 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
         if gate:config['ban_lookup_socket']=str(self.tmp/(name+'-lookup.sock'))
@@ -173,6 +176,7 @@ class Transport(unittest.TestCase):
             site=json.loads((ROOT/'profiles/sites/example.json').read_text())
             if exception:
                 site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
+                if field:site['exceptions'][0]['form_field']='secret'
             if wordpress:
                 site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'method_rules':[
                     {'id':'fixture.rest-read','scope':'rest','pattern':'^/fixture/v1/read-only$','methods':['GET'],'evidence':'fictional-rest-read-workflow'},
@@ -422,6 +426,20 @@ class Transport(unittest.TestCase):
             self.assertEqual(event['reason'],'backend_unavailable_or_response_limit')
             self.assertTrue(event['backend_attempted'])
         self.assertEqual(self.assert_denied_before_backend(method='HEAD',path='/representation/normal?x=forbidden-sentinel',body=b''),403)
+    def test_19_field_configuration_and_forged_confirmation_cannot_bypass_inspection(self):
+        with self.alternate_proxy('unconfirmed-field',exception=True,field=True) as (socket_path,events):
+            cases=[{'body':b'secret=forbidden-sentinel','headers':{'Content-Type':'application/x-www-form-urlencoded'}},
+                   {'body':b'secret=forbidden-sentinel','headers':{'Content-Type':'application/x-www-form-urlencoded','X-Waf-Confirmed-Field':'secret'}},
+                   {'body':b'{"secret":"forbidden-sentinel"}','headers':{'Content-Type':'application/json'}}]
+            for case in cases:
+                before=len(self.received)
+                status,headers,_=self.request(path='/feedback/',socket_path=socket_path,**case)
+                self.assertEqual(status,403)
+                self.assertEqual(len(self.received),before)
+                event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted'])
+                self.assertIsNone(event['matches'][0]['exception_profile'])
+                self.assertFalse(event['ban_started'])
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

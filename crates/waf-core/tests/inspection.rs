@@ -24,6 +24,7 @@ fn inspector() -> Inspector {
         methods: vec!["POST".into()],
         reason: "Synthetic method-scoped compatibility test".into(),
         evidence: "inspection-stream-comparison".into(),
+        form_field: None,
     });
     Inspector::new(compose(profiles, "example-site").unwrap()).unwrap()
 }

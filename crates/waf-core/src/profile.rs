@@ -116,6 +116,9 @@ pub struct Exception {
     pub methods: Vec<String>,
     pub reason: String,
     pub evidence: String,
+    /// Form value only; requires explicit application-side binding confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form_field: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -257,6 +260,13 @@ impl Profile {
                 );
             }
             expression(&exception.path_pattern)?;
+            if exception.form_field.as_ref().is_some_and(|name| {
+                name.is_empty()
+                    || name.len() > 64
+                    || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            }) {
+                return invalid("form field exceptions require a bounded scalar field name");
+            }
             for method in &exception.methods {
                 if !["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
                     .contains(&method.as_str())
@@ -369,6 +379,15 @@ pub fn compose(profiles: Vec<Profile>, site_id: &str) -> Result<EffectivePolicy>
         if !rules.contains_key(&item.exception.rule_id) {
             return invalid("exception references an unknown rule");
         }
+        if item.exception.form_field.is_some()
+            && !rules[&item.exception.rule_id]
+                .rule
+                .targets
+                .iter()
+                .any(|target| matches!(target, Target::Body))
+        {
+            return invalid("form field exception requires a body rule target");
+        }
         let key = serde_json::to_string(&item.exception).map_err(|e| PolicyError(e.to_string()))?;
         if !exception_keys.insert(key) {
             return invalid("duplicate exception declaration");
@@ -401,6 +420,7 @@ impl EffectivePolicy {
     ) -> Option<&SourcedException> {
         self.exceptions.iter().find(|e| {
             e.exception.rule_id == rule_id
+                && e.exception.form_field.is_none()
                 && e.exception.methods.iter().any(|m| m == method)
                 && Regex::new(&e.exception.path_pattern).is_ok_and(|r| r.is_match(path))
         })

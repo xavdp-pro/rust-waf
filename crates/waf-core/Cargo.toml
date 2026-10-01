@@ -10,6 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 regex.workspace = true
+regex-automata.workspace = true
 
 multer.workspace = true
 futures-util.workspace = true

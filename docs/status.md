@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Form field origin checkpoint
+
+The shared scanner now tracks selected scalar form-value origins through complete raw/decoded body views. An optional evidence-bearing form_field exception needs explicit application confirmation; the default proxy and current WordPress adapter confirm nothing. A bounded all-match Thompson automaton checks the match hull, including longer same-start alternatives and overlapping/later occurrences without repeated suffix searches. Non-body matches, duplicate bindings, other content types and syntax errors cannot borrow the exception. Existing profiles without selectors retain their canonical fingerprints.
+
+Forty-two Rust cases and twenty neutral HTTP groups pass with clippy, formatting, foundation and scorer checks. Nine added core tests cover decoding equivalence/bounds and field boundaries; one added contract test covers explicit selectors/fingerprint/lookup behavior. The new protocol group proves configuration and a forged confirmation header cannot permit forwarding. [Scope and reproduction](form-field-origins.md) record the actual API and pending WordPress confirmation, multi-field aggregation, JSON/multipart origins, partial-exception observability and deployed resource/application proof. This is not a password false-positive fix or completed workflow qualification.
+
 ## Response representation metadata
 
 The gateway preserves validated backend Content-Length when forwarding unchanged bytes, including HEAD and 304 representation metadata. A metadata-only body adapter prevents Hyper from dropping the nonzero length on GET/304; wire checks confirm no payload is sent on HEAD, 204 or 304. Missing HEAD length stays absent, and representation length above the response-body budget is accepted without allocating or receiving that content. Invalid/duplicate backend lengths and truncated ordinary responses return 502. A denied HEAD still has no neutral-backend receipt. This fixes transport compatibility only; field exceptions and site/browser acceptance remain pending.

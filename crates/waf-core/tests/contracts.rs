@@ -119,6 +119,7 @@ fn site_exception_is_scoped_and_preserves_rule_provenance() {
         methods: vec!["POST".into()],
         reason: "Synthetic neutral-backend workflow".into(),
         evidence: "fixture/feedback".into(),
+        form_field: None,
     });
     let policy = compose(input, "example-site").unwrap();
     assert_eq!(policy.rules["common.test"].layer, Layer::Core);
@@ -137,6 +138,56 @@ fn site_exception_is_scoped_and_preserves_rule_provenance() {
             .exception_for("common.test", "/feedback/", "GET")
             .is_none()
     );
+}
+
+#[test]
+fn form_field_contract_is_explicit_bounded_and_never_a_route_wide_exception() {
+    let mut input = profiles();
+    input[0].rules.push(Rule {
+        id: "fixture.field".into(),
+        targets: vec![Target::Body],
+        pattern: "needle".into(),
+        high_confidence: false,
+    });
+    input[2].exceptions.push(Exception {
+        rule_id: "fixture.field".into(),
+        path_pattern: "^/form/$".into(),
+        methods: vec!["POST".into()],
+        reason: "Fictional field test".into(),
+        evidence: "field-contract-test".into(),
+        form_field: None,
+    });
+    let baseline = compose(input.clone(), "example-site").unwrap().fingerprint;
+    let serialized = serde_json::to_value(&input[2]).unwrap();
+    assert!(serialized["exceptions"][0].get("form_field").is_none());
+    let mut explicit_null = serialized;
+    explicit_null["exceptions"][0]["form_field"] = serde_json::Value::Null;
+    input[2] = Profile::parse(&serde_json::to_vec(&explicit_null).unwrap()).unwrap();
+    assert_eq!(
+        compose(input.clone(), "example-site").unwrap().fingerprint,
+        baseline
+    );
+    input[2].exceptions[0].form_field = Some("secret".into());
+    let policy = compose(input.clone(), "example-site").unwrap();
+    assert_ne!(policy.fingerprint, baseline);
+    assert!(
+        policy
+            .exception_for("fixture.field", "/form/", "POST")
+            .is_none()
+    );
+    for name in [
+        "",
+        "secret[]",
+        "secret.value",
+        "secret value",
+        &"x".repeat(65),
+    ] {
+        let mut invalid = input.clone();
+        invalid[2].exceptions[0].form_field = Some(name.into());
+        assert!(compose(invalid, "example-site").is_err());
+    }
+    input[0].rules.last_mut().unwrap().targets = vec![Target::Query];
+    assert!(compose(input, "example-site").is_err());
 }
 #[test]
 fn unknown_rules_invalid_regex_and_silent_overrides_are_rejected() {
@@ -165,6 +216,7 @@ fn unknown_rules_invalid_regex_and_silent_overrides_are_rejected() {
         methods: vec!["GET".into()],
         reason: "test".into(),
         evidence: "fixture".into(),
+        form_field: None,
     });
     assert!(compose(input, "example-site").is_err());
 }

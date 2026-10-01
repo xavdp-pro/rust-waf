@@ -2,6 +2,10 @@
 use crate::profile::{EffectivePolicy, PolicyError, Target};
 use bytes::Bytes;
 use regex::Regex;
+use regex_automata::{
+    MatchKind,
+    nfa::thompson::{self, pikevm::PikeVM},
+};
 use serde::Serialize;
 use std::{
     borrow::Cow,
@@ -22,7 +26,7 @@ pub struct Views {
     pub headers: Vec<String>,
 }
 
-fn decode_once(input: &str, plus: bool, strict: bool) -> Result<String> {
+pub(crate) fn decode_once(input: &str, plus: bool, strict: bool) -> Result<String> {
     let mut out = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut index = 0;
@@ -60,7 +64,7 @@ fn decode_once(input: &str, plus: bool, strict: bool) -> Result<String> {
 fn variants(input: &str, passes: usize, plus: bool, strict: bool) -> Result<Vec<String>> {
     variants_owned(input.to_owned(), passes, plus, strict)
 }
-fn needs_decode(input: &str, plus: bool) -> bool {
+pub(crate) fn needs_decode(input: &str, plus: bool) -> bool {
     input.bytes().any(|b| b == b'%' || (plus && b == b'+'))
 }
 fn variants_owned(input: String, passes: usize, plus: bool, strict: bool) -> Result<Vec<String>> {
@@ -86,7 +90,7 @@ fn variants_owned(input: String, passes: usize, plus: bool, strict: bool) -> Res
     }
     Ok(views)
 }
-fn scan_variants(
+pub(crate) fn scan_variants(
     input: &str,
     passes: usize,
     plus: bool,
@@ -138,6 +142,26 @@ async fn normalize_into(
     body: Bytes,
     emit: &mut impl FnMut(&str) -> Result<()>,
 ) -> Result<Views> {
+    normalize_tagged(
+        policy,
+        (path, query),
+        content_type,
+        body,
+        &BTreeSet::new(),
+        &mut |text, _| emit(text),
+    )
+    .await
+}
+
+async fn normalize_tagged(
+    policy: &EffectivePolicy,
+    location: (&str, &str),
+    content_type: &str,
+    body: Bytes,
+    selected: &BTreeSet<&str>,
+    emit_tagged: &mut impl FnMut(&str, &[crate::form_scan::FieldSpan]) -> Result<()>,
+) -> Result<Views> {
+    let (path, query) = location;
     if path.len() + query.len() > policy.limits.uri_bytes {
         return Err(error("uri_limit"));
     }
@@ -160,14 +184,17 @@ async fn normalize_into(
         .to_ascii_lowercase();
     // A Content-Type on a bodyless request does not create a JSON document.
     if !body.is_empty() && (media == "application/json" || media.ends_with("+json")) {
-        emit(&String::from_utf8_lossy(&body))?;
+        emit_tagged(&String::from_utf8_lossy(&body), &[])?;
         crate::json_scan::scan_strings(&body, |text| {
-            scan_variants(text, passes, false, false, emit)
+            scan_variants(text, passes, false, false, &mut |text| {
+                emit_tagged(text, &[])
+            })
         })?;
     } else if media == "application/x-www-form-urlencoded" {
         let text = std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
-        scan_variants(text, passes, true, true, emit)?;
+        crate::form_scan::scan(text, passes, selected, emit_tagged)?;
     } else if media == "multipart/form-data" {
+        let mut emit = |text: &str| emit_tagged(text, &[]);
         emit(&String::from_utf8_lossy(&body))?;
         let boundary = multer::parse_boundary(content_type)
             .map_err(|_| error("invalid_multipart_boundary"))?;
@@ -187,19 +214,31 @@ async fn normalize_into(
                 return Err(error("multipart_part_limit"));
             }
             if let Some(name) = field.name() {
-                scan_variants(name, passes, false, false, emit)?;
+                scan_variants(name, passes, false, false, &mut emit)?;
             }
             if let Some(name) = field.file_name() {
-                scan_variants(name, passes, false, false, emit)?;
+                scan_variants(name, passes, false, false, &mut emit)?;
             }
             let value = field
                 .bytes()
                 .await
                 .map_err(|_| error("invalid_multipart"))?;
-            scan_variants(&String::from_utf8_lossy(&value), passes, false, false, emit)?;
+            scan_variants(
+                &String::from_utf8_lossy(&value),
+                passes,
+                false,
+                false,
+                &mut emit,
+            )?;
         }
     } else {
-        scan_variants(&String::from_utf8_lossy(&body), passes, false, false, emit)?;
+        scan_variants(
+            &String::from_utf8_lossy(&body),
+            passes,
+            false,
+            false,
+            &mut |text| emit_tagged(text, &[]),
+        )?;
     }
     Ok(Views {
         path: paths,
@@ -220,12 +259,15 @@ pub struct Match {
 /// Completed syntax/normalization with body rule hits, never retained body values.
 pub struct ScannedRequest {
     pub views: Views,
-    body_matches: BTreeSet<String>,
+    // Intersection of exception candidates covering every occurrence in every
+    // body view. Empty means some occurrence has no qualified field origin.
+    body_matches: BTreeMap<String, BTreeSet<usize>>,
 }
 pub struct Inspector {
     pub policy: EffectivePolicy,
     rules: BTreeMap<String, Regex>,
     exceptions: Vec<Regex>,
+    field_coverage: BTreeMap<String, PikeVM>,
 }
 impl Inspector {
     pub async fn scan(
@@ -235,22 +277,84 @@ impl Inspector {
         content_type: &str,
         body: Bytes,
     ) -> Result<ScannedRequest> {
-        let mut body_matches = BTreeSet::new();
-        let views = normalize_into(&self.policy, path, query, content_type, body, &mut |text| {
-            for (id, entry) in &self.policy.rules {
-                if !body_matches.contains(id)
-                    && entry
-                        .rule
-                        .targets
-                        .iter()
-                        .any(|target| matches!(target, Target::Body))
-                    && self.rules[id].is_match(text)
-                {
-                    body_matches.insert(id.clone());
+        let mut body_matches: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        let mut coverage_caches = BTreeMap::new();
+        let selected = self
+            .policy
+            .exceptions
+            .iter()
+            .filter_map(|entry| entry.exception.form_field.as_deref())
+            .collect();
+        let views = normalize_tagged(
+            &self.policy,
+            (path, query),
+            content_type,
+            body,
+            &selected,
+            &mut |text, spans| {
+                for (id, entry) in &self.policy.rules {
+                    if !body_matches.get(id).is_some_and(BTreeSet::is_empty)
+                        && entry
+                            .rule
+                            .targets
+                            .iter()
+                            .any(|target| matches!(target, Target::Body))
+                    {
+                        if let Some(hit) = self.rules[id].find(text) {
+                            let mut coverage = self
+                                .policy
+                                .exceptions
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, e)| e.exception.rule_id == *id)
+                                .filter(|(_, e)| {
+                                    e.exception.form_field.as_ref().is_some_and(|name| {
+                                        hit.start() < hit.end()
+                                            && spans.iter().any(|span| {
+                                                span.name == *name
+                                                    && span.range.start <= hit.start()
+                                                    && hit.end() <= span.range.end
+                                            })
+                                    })
+                                })
+                                .map(|(index, _)| index)
+                                .collect::<BTreeSet<_>>();
+                            if !coverage.is_empty() {
+                                let matcher = &self.field_coverage[id];
+                                let cache = coverage_caches
+                                    .entry(id.clone())
+                                    .or_insert_with(|| matcher.create_cache());
+                                // All-mode scans every NFA match state through EOF:
+                                // its final match has the greatest possible end.
+                                // Ordinary find supplies the smallest possible start.
+                                // A field covering this hull covers every occurrence,
+                                // including overlapping and same-start alternatives.
+                                let last = matcher
+                                    .find(cache, text)
+                                    .ok_or_else(|| error("field_coverage_disagreement"))?;
+                                coverage.retain(|index| {
+                                    let name = self.policy.exceptions[*index]
+                                        .exception
+                                        .form_field
+                                        .as_ref()
+                                        .unwrap();
+                                    spans.iter().any(|span| {
+                                        span.name == *name && last.end() <= span.range.end
+                                    })
+                                });
+                            }
+                            body_matches
+                                .entry(id.clone())
+                                .and_modify(|current| {
+                                    current.retain(|index| coverage.contains(index));
+                                })
+                                .or_insert(coverage);
+                        }
+                    }
                 }
-            }
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await?;
         Ok(ScannedRequest {
             views,
@@ -259,7 +363,24 @@ impl Inspector {
     }
 
     pub fn inspect_scanned(&self, request: &ScannedRequest, method: &str) -> Vec<Match> {
-        self.inspect_with_hits(&request.views, method, &request.body_matches)
+        self.inspect_scanned_with_fields(request, method, &[])
+    }
+
+    /// Only the application adapter can confirm scalar field bindings after
+    /// resolving dispatch, aliases, duplicates, arrays and the actual action.
+    /// No field is confirmed by default or by a client-supplied header.
+    pub fn inspect_scanned_with_fields(
+        &self,
+        request: &ScannedRequest,
+        method: &str,
+        confirmed_fields: &[&str],
+    ) -> Vec<Match> {
+        self.inspect_with_hits(
+            &request.views,
+            method,
+            &request.body_matches,
+            confirmed_fields,
+        )
     }
 
     pub fn new(policy: EffectivePolicy) -> Result<Self> {
@@ -277,56 +398,86 @@ impl Inspector {
             .iter()
             .map(|e| Regex::new(&e.exception.path_pattern).map_err(|_| error("invalid_exception")))
             .collect::<Result<_>>()?;
+        let mut field_coverage = BTreeMap::new();
+        for exception in &policy.exceptions {
+            if exception.exception.form_field.is_some() {
+                let id = &exception.exception.rule_id;
+                if !field_coverage.contains_key(id) {
+                    let matcher = PikeVM::builder()
+                        .configure(PikeVM::config().match_kind(MatchKind::All))
+                        .thompson(
+                            thompson::Config::new()
+                                .nfa_size_limit(Some(1024 * 1024))
+                                .which_captures(thompson::WhichCaptures::Implicit),
+                        )
+                        .build(&policy.rules[id].rule.pattern)
+                        .map_err(|_| error("invalid_field_coverage_rule"))?;
+                    if matcher.get_nfa().has_empty() {
+                        return Err(error("empty_match_field_rule"));
+                    }
+                    field_coverage.insert(id.clone(), matcher);
+                }
+            }
+        }
         Ok(Self {
             policy,
             rules,
             exceptions,
+            field_coverage,
         })
     }
     pub fn inspect(&self, views: &Views, method: &str) -> Vec<Match> {
-        self.inspect_with_hits(views, method, &BTreeSet::new())
+        self.inspect_with_hits(views, method, &BTreeMap::new(), &[])
     }
 
     fn inspect_with_hits(
         &self,
         views: &Views,
         method: &str,
-        body_matches: &BTreeSet<String>,
+        body_matches: &BTreeMap<String, BTreeSet<usize>>,
+        confirmed_fields: &[&str],
     ) -> Vec<Match> {
         self.policy
             .rules
             .iter()
             .filter_map(|(id, entry)| {
                 let regex = &self.rules[id];
-                let hit = body_matches.contains(id)
-                    || entry.rule.targets.iter().any(|target| {
-                        match target {
-                            Target::Path => &views.path,
-                            Target::Query => &views.query,
-                            Target::Body => &views.body,
-                            Target::Headers => &views.headers,
-                        }
-                        .iter()
-                        .any(|value| regex.is_match(value))
-                    });
-                if !hit {
+                let other_hit = entry.rule.targets.iter().any(|target| {
+                    match target {
+                        Target::Path => &views.path,
+                        Target::Query => &views.query,
+                        Target::Body => &views.body,
+                        Target::Headers => &views.headers,
+                    }
+                    .iter()
+                    .any(|value| regex.is_match(value))
+                });
+                if !body_matches.contains_key(id) && !other_hit {
                     return None;
                 }
-                let exception =
-                    self.policy
-                        .exceptions
-                        .iter()
-                        .zip(&self.exceptions)
-                        .find(|(e, r)| {
-                            e.exception.rule_id == *id
-                                && e.exception.methods.iter().any(|m| m == method)
-                                && views.path.iter().all(|path| r.is_match(path))
-                        });
+                let exception = self
+                    .policy
+                    .exceptions
+                    .iter()
+                    .zip(&self.exceptions)
+                    .enumerate()
+                    .find(|(index, (e, r))| {
+                        e.exception.rule_id == *id
+                            && e.exception.methods.iter().any(|m| m == method)
+                            && views.path.iter().all(|path| r.is_match(path))
+                            && e.exception.form_field.as_ref().is_none_or(|name| {
+                                !other_hit
+                                    && confirmed_fields.contains(&name.as_str())
+                                    && body_matches
+                                        .get(id)
+                                        .is_some_and(|covered| covered.contains(index))
+                            })
+                    });
                 Some(Match {
                     rule_id: id.clone(),
                     profile_id: entry.profile_id.clone(),
                     high_confidence: entry.rule.high_confidence,
-                    exception_profile: exception.map(|(e, _)| e.profile_id.clone()),
+                    exception_profile: exception.map(|(_, (e, _))| e.profile_id.clone()),
                 })
             })
             .collect()

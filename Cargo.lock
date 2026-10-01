@@ -713,6 +713,7 @@ dependencies = [
  "futures-util",
  "multer",
  "regex",
+ "regex-automata",
  "serde",
  "serde_json",
  "sha2",

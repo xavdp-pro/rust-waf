@@ -102,6 +102,32 @@ struct Evidence<'a> {
     ban_started: bool,
     application: Option<serde_json::Value>,
 }
+// Hyper otherwise discards representation length on an empty 304 body. This
+// metadata-only body is used exclusively for 304; its encoder sends no frames.
+struct RepresentationMetadata(u64);
+impl hyper::body::Body for RepresentationMetadata {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Self::Error>>> {
+        std::task::Poll::Ready(None)
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::SizeHint::with_exact(self.0)
+    }
+}
+fn representation_length(headers: &HeaderMap) -> Result<Option<u64>, &'static str> {
+    one(headers, "content-length")?
+        .map(|text| {
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("invalid_backend_content_length");
+            }
+            text.parse().map_err(|_| "invalid_backend_content_length")
+        })
+        .transpose()
+}
 fn finish(
     app: &App,
     id: &str,
@@ -123,14 +149,26 @@ fn finish(
         "request_id":id,"fingerprint":app.inspector.policy.fingerprint,"decision":decision,"reason":reason,"matches":matches,
         "status":status.as_u16(),"elapsed_us":start.elapsed().as_micros(),"backend_attempted":backend_attempted,"ban_started":ban_started,"application":application});
     let write_result = writeln!(io::stdout().lock(), "{event}");
-    let mut response = Response::new(Body::from(body));
+    strip_hop(&mut headers);
+    let response_body = if write_result.is_ok() && status == StatusCode::NOT_MODIFIED {
+        match representation_length(&headers).ok().flatten() {
+            Some(length) => Body::new(RepresentationMetadata(length)),
+            None => Body::empty(),
+        }
+    } else {
+        Body::from(body)
+    };
+    let mut response = Response::new(response_body);
     *response.status_mut() = if write_result.is_ok() {
         status
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    strip_hop(&mut headers);
-    headers.remove("content-length");
+    // Forwarded bytes are unchanged and Hyper validates ordinary response framing.
+    // HEAD/304 Content-Length describes the selected representation, not body bytes.
+    if status == StatusCode::NO_CONTENT {
+        headers.remove("content-length");
+    }
     headers.insert("x-request-id", HeaderValue::from_str(id).unwrap());
     *response.headers_mut() = headers;
     response
@@ -412,6 +450,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
             .await
             .map_err(io::Error::other)?;
         let (parts, body) = response.into_parts();
+        representation_length(&parts.headers).map_err(io::Error::other)?;
         let body = to_bytes(Body::new(body), app.config.response_bytes)
             .await
             .map_err(io::Error::other)?;

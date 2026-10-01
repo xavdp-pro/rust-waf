@@ -18,3 +18,4 @@ bytes.workspace = true
 http.workspace = true
 uuid.workspace = true
 httparse.workspace = true
+waf-wordpress = { path = "../waf-wordpress" }

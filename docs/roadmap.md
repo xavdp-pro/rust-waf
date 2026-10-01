@@ -14,7 +14,7 @@ Seven initial common patterns, observe/enforce decisions, a 30-case fictional de
 
 ## Step 04 — Generic WordPress specialization
 
-Qualify REST, AJAX, login, uploads, roles, methods, and optional plugin modules. Acceptance: legitimate workflows preserved; positive/negative permission and body tests; route alternatives and method overrides covered; no assumptions about a particular deployed site.
+Dispatch, effective methods, administration trust and evidence-bearing site method policies are implemented with eight semantic tests and correlated HTTP tests. Browser workflows, field-scoped exceptions, role/nonce integration and optional plugin modules remain pending. Qualify REST, AJAX, login, uploads, roles, methods, and optional plugin modules. Acceptance: legitimate workflows preserved; positive/negative permission and body tests; route alternatives and method overrides covered; no assumptions about a particular deployed site.
 
 ## Step 05 — Integration and reusable evidence
 

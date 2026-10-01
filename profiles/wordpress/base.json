@@ -2,10 +2,10 @@
   "schema_version": 1,
   "profile_id": "wordpress-base",
   "layer": "wordpress",
-  "version": "0.1.0-design",
+  "version": "0.2.0",
   "extends": "core-base",
   "metadata": {
-    "status": "design-only",
+    "status": "implemented-unqualified",
     "route_families": [
       "rest",
       "ajax",
@@ -15,5 +15,13 @@
     ],
     "qualification": "declared_routes_and_actual_workflows_required",
     "optional_plugin_modules": []
-  }
+  },
+  "modules": [
+    {
+      "name": "wordpress",
+      "settings": {
+        "schema_version": 1
+      }
+    }
+  ]
 }

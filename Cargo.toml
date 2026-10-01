@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/waf-core", "crates/waf-proxy"]
+members = ["crates/waf-core", "crates/waf-proxy", "crates/waf-wordpress"]
 resolver = "3"
 
 [workspace.package]

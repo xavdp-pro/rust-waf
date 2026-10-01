@@ -193,6 +193,7 @@ class Transport(unittest.TestCase):
                      'request_order':'GP','arg_separator':'&','max_input_vars':1000,'max_input_nesting_level':64,
                      'form_field':'form[fields][1]','guards':[{'field':'form[id]','equals':'17'}],
                      'evidence':'fictional-handler-and-form-schema'}]}}]
+            if consumer == 'multipart':site['modules'][0]['settings']['form_consumers'][0]['media_types']=['application/x-www-form-urlencoded','multipart/form-data']
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -362,7 +363,9 @@ class Transport(unittest.TestCase):
             self.assertFalse(blocked['backend_attempted']);self.assertFalse(blocked['ban_started'])
             self.assertEqual(lookup(headers={'X-Waf-Admin-Friend':'1'})[0],204)
             self.assertEqual(lookup(headers={'X-Waf-Client-IP':'198.51.100.26'})[0],204)
-            self.assertEqual(self.request(socket_path=path)[0],429)
+            # Early rejection does not consume a body. Avoid racing a second
+            # client write against the deliberate server-side connection close.
+            self.assertEqual(self.request(body=b'',socket_path=path)[0],429)
             time.sleep(1.1)
             self.assertEqual(lookup()[0],204)
             self.assertEqual(self.request(socket_path=path)[0],200)
@@ -570,6 +573,66 @@ class Transport(unittest.TestCase):
             self.assertIsNone(record['matches'][0]['exception_profile'])
             self.assertEqual(record['matches'][0]['unapplied_field_profiles'],['example-site'])
             self.assertNotIn('forbidden-sentinel',json.dumps(record))
+
+    def test_25_multipart_origins_cannot_invent_wordpress_media_or_file_confirmation(self):
+        def form(value,filename=False):
+            parts=[b'--origin-boundary\r\nContent-Disposition: form-data; name="action"\r\n\r\nfixture_submit\r\n',
+                   b'--origin-boundary\r\nContent-Disposition: form-data; name="form[id]"\r\n\r\n17\r\n',
+                   b'--origin-boundary\r\nContent-Disposition: form-data; name="form[fields][1]"'+(b'; filename="file.txt"' if filename else b'')+b'\r\n\r\n'+value+b'\r\n--origin-boundary--\r\n']
+            return b''.join(parts)
+        with self.alternate_proxy('multipart-unconfirmed',exception=True,field='form[fields][1]',consumer=True) as (path,events):
+            for body in [form(b'forbidden-sentinel'),form(b'forbidden%2Dsentinel'),form(b'forbidden-sentinel',filename=True)]:
+                before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=body,socket_path=path,
+                    headers={'Content-Type':'multipart/form-data; boundary=origin-boundary','X-Waf-Confirmed-Field':'form[fields][1]'})
+                self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+                record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(record['backend_attempted']);self.assertFalse(record['ban_started'])
+                self.assertIsNone(record['matches'][0]['exception_profile'])
+                self.assertNotIn('unapplied_field_profiles',record['matches'][0])
+            body=form(b'benign')
+            status,_,_=self.request(path='/wp-admin/admin-ajax.php',body=body,socket_path=path,
+                headers={'Content-Type':'multipart/form-data; boundary=origin-boundary'})
+            self.assertEqual(status,200);self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(body).hexdigest())
+
+    def test_26_explicit_multipart_consumer_preserves_bytes_and_cannot_hide_files_or_siblings(self):
+        def body(parts):
+            out=b''
+            for name,value,file in parts:
+                out+=b'--qualified-boundary\r\nContent-Disposition: form-data; name="'+name.encode()+b'"'
+                if file is not None:out+=b'; filename="'+file.encode()+b'"'
+                out+=b'\r\n\r\n'+value+b'\r\n'
+            return out+b'--qualified-boundary--\r\n'
+        base=[('action',b'fixture_submit',None),('form[id]',b'17',None),('form[fields][1]',b'forbidden-sentinel',None)]
+        mime='multipart/form-data; boundary=qualified-boundary'
+        with self.alternate_proxy('multipart-qualified',exception=True,field='form[fields][1]',consumer='multipart') as (path,events):
+            for parts in [base,base+[('upload',b'\xff benign','file.bin')]]:
+                payload=body(parts);before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=payload,socket_path=path,headers={'Content-Type':mime})
+                self.assertEqual(status,200);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertEqual(record['matches'][0]['exception_profile'],'example-site');self.assertFalse(record['ban_started'])
+            negatives=[base+[('form[fields][1]',b'other',None)],base+[('form',b'other',None)],
+                       base+[('form[fields][2]',b'forbidden-sentinel',None)],
+                       base+[('upload',b'forbidden-sentinel','file.bin')],
+                       base+[('upload',b'benign','forbidden-sentinel.bin')],
+                       base[:2]+[('form[fields][1]',b'forbidden-sentinel','file.txt')],
+                       [base[0],('form[id]',b'%31%37',None),base[2]],
+                       base+[(' form[fields][1]',b'other',None)],
+                       base+[('form[fields][1]ignored',b'other',None)]]
+            for parts in negatives:
+                before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=body(parts),socket_path=path,
+                    headers={'Content-Type':mime,'X-Waf-Confirmed-Field':'form[fields][1]'})
+                self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
+                record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(record['backend_attempted']);self.assertFalse(record['ban_started'])
+            for method,route,extra in [('GET','/wp-admin/admin-ajax.php',{}),('POST','/wp-admin/admin-ajax.php?other=forbidden-sentinel',{}),
+                                       ('POST','/wp-admin/admin-ajax.php',{'X-Fixture':'forbidden-sentinel'})]:
+                before=len(self.received)
+                status,_,_=self.request(method=method,path=route,body=body(base),socket_path=path,headers={'Content-Type':mime,**extra})
+                self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
 
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()

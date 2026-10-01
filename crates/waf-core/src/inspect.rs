@@ -194,13 +194,36 @@ async fn normalize_tagged(
         let text = std::str::from_utf8(&body).map_err(|_| error("invalid_form_utf8"))?;
         crate::form_scan::scan(text, passes, selected, emit_tagged)?;
     } else if media == "multipart/form-data" {
-        let mut emit = |text: &str| emit_tagged(text, &[]);
-        emit(&String::from_utf8_lossy(&body))?;
         let boundary = multer::parse_boundary(content_type)
             .map_err(|_| error("invalid_multipart_boundary"))?;
         if boundary.len() > 70 {
             return Err(error("invalid_multipart_boundary"));
         }
+        let mut original_spans = Vec::new();
+        if !selected.is_empty()
+            && crate::multipart_origin::qualified_boundary(content_type).is_some()
+        {
+            if let Some(parts) =
+                crate::multipart_origin::layout(&body, &boundary, policy.limits.multipart_parts)
+            {
+                if crate::multipart_origin::agrees(
+                    body.clone(),
+                    &boundary,
+                    &parts,
+                    policy.limits.multipart_parts,
+                )
+                .await?
+                {
+                    original_spans = crate::multipart_origin::spans(&parts, &body, selected)?;
+                }
+            }
+        }
+        let selected_values = original_spans
+            .iter()
+            .map(|span| span.name.clone())
+            .collect::<BTreeSet<_>>();
+        crate::multipart_origin::lossy_offsets(&body, &mut original_spans);
+        emit_tagged(&String::from_utf8_lossy(&body), &original_spans)?;
         let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(body) });
         let mut multipart = multer::Multipart::new(stream, boundary);
         let mut count = 0;
@@ -214,11 +237,19 @@ async fn normalize_tagged(
                 return Err(error("multipart_part_limit"));
             }
             if let Some(name) = field.name() {
-                scan_variants(name, passes, false, false, &mut emit)?;
+                scan_variants(name, passes, false, false, &mut |text| {
+                    emit_tagged(text, &[])
+                })?;
             }
             if let Some(name) = field.file_name() {
-                scan_variants(name, passes, false, false, &mut emit)?;
+                scan_variants(name, passes, false, false, &mut |text| {
+                    emit_tagged(text, &[])
+                })?;
             }
+            let selected_name = field
+                .name()
+                .filter(|name| field.file_name().is_none() && selected_values.contains(*name))
+                .map(str::to_owned);
             let value = field
                 .bytes()
                 .await
@@ -228,7 +259,18 @@ async fn normalize_tagged(
                 passes,
                 false,
                 false,
-                &mut emit,
+                &mut |text| {
+                    let spans = selected_name
+                        .as_ref()
+                        .map(|name| {
+                            vec![crate::form_scan::FieldSpan {
+                                name: name.clone(),
+                                range: 0..text.len(),
+                            }]
+                        })
+                        .unwrap_or_default();
+                    emit_tagged(text, &spans)
+                },
             )?;
         }
     } else {

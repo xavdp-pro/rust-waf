@@ -532,15 +532,11 @@ impl Wordpress {
                 confirmed_fields.push("pwd".into());
             }
         }
-        if family == "ajax"
-            && wire_method == "POST"
-            && media == "application/x-www-form-urlencoded"
-            && !query_params.contains_key("action")
-        {
+        if family == "ajax" && wire_method == "POST" && !query_params.contains_key("action") {
             for consumer in &self.site.form_consumers {
                 if consumer.path == path
                     && action.as_deref() == Some(consumer.action.as_str())
-                    && consumer.confirms(&form_body)?
+                    && consumer.confirms(&form_body, &media, content_type, max_parts)?
                     && !confirmed_fields.contains(&consumer.form_field)
                 {
                     confirmed_fields.push(consumer.form_field.clone());

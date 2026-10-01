@@ -1,5 +1,13 @@
 # Actual status — 2026-10-01
 
+## Conservative multipart text origins and explicit AJAX media
+
+The shared engine can attribute canonical multipart UTF-8 text leaves through a bounded borrowed physical layout and an independent Multer agreement pass. Raw whole-body and existing per-part inspection remain complete. Files, filenames, names, headers, cross-part matches and ambiguous bindings cannot borrow text exceptions. Unsupported framing, headers or content-type parameters withhold provenance; malformed syntax still denies forwarding.
+
+WordPress AJAX consumers may explicitly opt into multipart/form-data while existing declarations default to URL-encoded only. Literal MIME names/identity values, file separation, canonical tree checks and parser limits preserve consumer scope. Application authentication, tokens, timing, roles and ownership remain in WordPress. No actual site consumer is enabled by this public change. Candidate-specific concurrent resources, deployment, PHP parser/workflow qualification, Browser and independent/performance acceptance remain pending.
+
+All 73 Rust semantic cases and 27 neutral HTTP groups pass with clippy, formatting, foundation, scorer and both statistics checks. New tests exercise MIME layout/parser agreement, boundary ambiguity, nested collisions, binary offset mapping, explicit media, original-byte forwarding and pre-backend negatives. The early-ban status fixture now avoids racing an unnecessary body write against deliberate connection closure; gateway behavior is unchanged.
+
 ## Explicit AJAX nested form consumer contract
 
 The WordPress site module accepts optional evidence-bearing form_consumers with the canonical AJAX endpoint, POST action, stable scalar identity guards and explicit FPM parsing assumptions. Canonical nested leaves require unique original bindings; PHP aliases, append/malformed/ignored-suffix keys, ancestor/descendant collisions and count/depth excess withhold confirmation. No consumer is enabled by default. WordPress still performs nonce/token, timing, role and ownership checks; this API does not authorize a complete submission. Unsupported array shapes require further parser support and qualification before enabling those flows.
@@ -8,7 +16,7 @@ All 61 Rust semantic cases and 25 neutral HTTP groups pass, including five new a
 
 ## Canonical nested form origins
 
-The core accepts bounded canonical bracket selectors for original URL-encoded leaf values. Duplicate/ancestor/descendant writes and related malformed paths withhold exceptions; disjoint sibling arrays remain separate. Numeric keys are not coerced. Configured paths affect deterministic fingerprints and never create route-wide exceptions. Application confirmation remains mandatory; the WordPress adapter currently confirms only the explicitly qualified login pwd binding. This source change does not qualify another plugin or implement PHP nested-key normalization.
+The core accepts bounded canonical bracket selectors for original URL-encoded leaf values. Duplicate/ancestor/descendant writes and related malformed paths withhold exceptions; disjoint sibling arrays remain separate. Numeric keys are not coerced. Configured paths affect deterministic fingerprints and never create route-wide exceptions. Application confirmation remains mandatory; the WordPress adapter confirms explicit login pwd bindings and opt-in AJAX consumer leaves. This source change does not qualify another plugin or implement PHP nested-key normalization.
 
 All 56 Rust semantic cases and 23 neutral HTTP groups pass. New tests cover canonical/encoded nested keys, decoding, siblings, leading-zero keys, duplicate/valueless/ancestor/descendant/append/suffix collisions, metadata bounds and fingerprint/configuration rejection. A neutral protocol group verifies that nested configuration and a forged confirmation header cannot bypass a pre-backend denial. Clippy, formatting, foundation, aggregation and scorer checks pass. Artifact-specific resources, deployment, actual application consumers and browser workflows remain separate requirements. See [the field contract](form-field-origins.md).
 

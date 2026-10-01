@@ -364,7 +364,12 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let effective_method = context.as_ref().map_or(parts.method.as_str(), |context| {
         context.effective_method.as_str()
     });
-    let matches = app.inspector.inspect_scanned(&scanned, effective_method);
+    let confirmed_fields = context
+        .as_ref()
+        .map_or(&[][..], |context| context.confirmed_fields.as_slice());
+    let matches =
+        app.inspector
+            .inspect_scanned_with_fields(&scanned, effective_method, confirmed_fields);
     // Inspection is complete. Do not retain normalized bodies during backend I/O.
     drop(scanned);
     let blocked = matches.iter().any(|m| m.exception_profile.is_none());

@@ -162,7 +162,7 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False, login=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
         if gate:config['ban_lookup_socket']=str(self.tmp/(name+'-lookup.sock'))
@@ -176,13 +176,16 @@ class Transport(unittest.TestCase):
             site=json.loads((ROOT/'profiles/sites/example.json').read_text())
             if exception:
                 site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
-                if field:site['exceptions'][0]['form_field']='secret'
+                if field:site['exceptions'][0]['form_field']='pwd' if login else 'secret'
             if wordpress:
                 site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'method_rules':[
                     {'id':'fixture.rest-read','scope':'rest','pattern':'^/fixture/v1/read-only$','methods':['GET'],'evidence':'fictional-rest-read-workflow'},
                     {'id':'fixture.cart','scope':'rest','pattern':'^/fixture/v1/cart/items/[0-9]+$','methods':['GET','DELETE'],'evidence':'fictional-cart-method-workflow'},
                     {'id':'fixture.ajax-read','scope':'ajax','pattern':'^fixture_lookup$','methods':['GET'],'evidence':'fictional-ajax-method-workflow'},
                 ]}}]
+            if login:
+                site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'login_consumers':[
+                    {'path':'/feedback','request_order':'GP','evidence':'fictional-wp-signon-field-consumer'}]}}]
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -440,6 +443,34 @@ class Transport(unittest.TestCase):
                 self.assertFalse(event['backend_attempted'])
                 self.assertIsNone(event['matches'][0]['exception_profile'])
                 self.assertFalse(event['ban_started'])
+    def test_20_wordpress_confirmed_password_preserves_bytes_and_other_boundaries(self):
+        with self.alternate_proxy('qualified-login',exception=True,field=True,login=True,reliable=True) as (socket_path,events):
+            for body in [b'pwd=forbidden-sentinel',b'%70wd=forbidden-sentinel',b'pwd=%2566orbidden-sentinel&action=login']:
+                status,headers,reply=self.request(path='/feedback/',body=body,socket_path=socket_path,
+                    headers={'Content-Type':'application/x-www-form-urlencoded'})
+                self.assertEqual(status,200);self.assertEqual(reply,body)
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(body).hexdigest())
+                event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertEqual(event['matches'][0]['exception_profile'],'example-site')
+                self.assertEqual(event['application']['consumer_profile'],'example-site')
+                self.assertTrue(event['backend_attempted']);self.assertFalse(event['ban_started'])
+            denied=[{'body':b'pwd=forbidden-sentinel&other=forbidden-sentinel'},
+                    {'path':'/feedback/?q=forbidden-sentinel'}, {'path':'/feedback/?key='},
+                    {'path':'/feedback/?checkemail=0'}, {'path':'/feedback/?action=logout'},
+                    {'body':b'pwd=forbidden-sentinel&action=logout'},
+                    {'body':b'pwd=forbidden-sentinel&rest_route=/fixture/v1/x'},
+                    {'path':'/feedback/?rest_route=/fixture/v1/x&_method=DELETE'},
+                    {'method':'GET'}, {'body':b'pwd=forbidden-sentinel&pwd%00suffix=benign'},
+                    {'body':b'pwd[]=forbidden-sentinel'}, {'body':b'pwd=forbidden-sentinel&pwd=benign'}]
+            for case in denied:
+                before=len(self.received)
+                values={'path':'/feedback/','body':b'pwd=forbidden-sentinel','socket_path':socket_path,
+                    'headers':{'Content-Type':'application/x-www-form-urlencoded','X-Waf-Admin-Friend':'1'}}
+                values.update(case)
+                status,headers,_=self.request(**values)
+                self.assertIn(status,[400,403]);self.assertEqual(len(self.received),before)
+                event=next(r for r in [json.loads(line) for line in events.read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

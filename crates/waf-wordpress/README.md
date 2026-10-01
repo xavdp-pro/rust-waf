@@ -35,8 +35,16 @@ For REST, query `_method` wins over `X-HTTP-Method-Override`. The resulting meth
 
 Administration paths require trusted ingress metadata in both proxy modes. Member login, admin-ajax and admin-post remain available for legitimate workflows and application authorization. The gateway does not infer user roles from client cookies or headers and does not validate WordPress nonces, account capabilities or object ownership. The backend must retain application authentication and deployer-side checks restricting administrative identities; trusted access does not grant an application role.
 
+## Explicit login consumers
+
+A site may declare login_consumers entries with a canonical path, request_order set explicitly to GP and an evidence reference. No consumer is enabled by default, including wp-login.php. The site analysis must verify the actual wp_signon handler/hooks, PHP request order and route mapping before declaring one. GP means POST action takes precedence and cookies cannot select it; conflicting action sources withhold confirmation.
+
+On a declared consumer, the adapter confirms only a nonempty scalar POST form pwd when the resolved action is absent/login, no GET key/checkemail overrides exist and no query/form rest_route is present. Duplicate PHP-normalized pwd aliases and arrays are rejected on the login flow. Canonical or percent-encoded names decoding once to pwd can bind; single leading-space/NUL aliases stay unconfirmed because the shared scanner does not invent PHP normalization. JSON/multipart, other methods/actions and REST dispatch never borrow this confirmation. Non-REST method hints retain actual WordPress POST semantics. Confirmation retains the site profile identity, never the password or client-provided permission claims.
+
+The gateway passes these confirmations to the shared origin-aware inspector after dispatch/access checks. A separate site form_field exception is still required; only that field's complete match hull can be excepted. Application authentication, staff restrictions, sibling/query/header inspection and parsing invariants remain required. This is an explicit consumer contract, not an automatic generic password exclusion. Actual site/browser/resource qualification remains deployer work.
+
 ## Evidence and limitations
 
-Run `cargo test -p waf-wordpress --locked` for eight semantic tests and `cargo test -p waf-proxy --locked` for actual HTTP decisions/correlated neutral-backend checks. These do not qualify browser workflows, plugin-modified dispatch or PHP execution. Content-field exceptions, nonce/role integration, plugin modules and deployment remain pending. Requalify site behavior after plugin/theme/core changes.
+Run `cargo test -p waf-wordpress --locked` for thirteen semantic tests and `cargo test -p waf-proxy --locked` for actual HTTP decisions/correlated neutral-backend checks. These do not qualify browser workflows, plugin-modified dispatch or PHP execution. Broader content-field bindings, nonce/role integration, plugin modules and deployment remain pending. Requalify site behavior after plugin/theme/core changes.
 
 The semantics are based on primary [WordPress REST dispatch](https://developer.wordpress.org/reference/classes/wp_rest_server/serve_request/), [route loading](https://developer.wordpress.org/reference/functions/rest_api_loaded/) and [PHP form parsing](https://www.php.net/manual/en/function.parse-str.php). This is original Rust code; no WordPress PHP source was copied into this public crate.

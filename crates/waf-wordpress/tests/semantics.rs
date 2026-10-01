@@ -40,6 +40,176 @@ fn policy() -> Wordpress {
         json!({"schema_version":1,"method_rules":[{"id":"fixture.cart","scope":"rest","pattern":"^/shop/v1/cart/items/[0-9]+$","methods":["GET","DELETE"],"evidence":"fictional-cart-workflow"}]}),
     )
 }
+
+fn login_policy() -> Wordpress {
+    wordpress(json!({"schema_version":1,"login_consumers":[{
+        "path":"/member-entry","request_order":"GP","evidence":"fictional-wp-signon-consumer"}]}))
+}
+fn login_request<'a>(query: &'a str, method: &'a str, body: &'static str) -> Request<'a> {
+    let mut input = request("/member-entry/", query, method);
+    input.content_type = "application/x-www-form-urlencoded";
+    input.body = Bytes::from(body);
+    input
+}
+
+#[tokio::test]
+async fn login_scalar_requires_explicit_consumer_and_keeps_values_out_of_context() {
+    let wp = login_policy();
+    for body in ["pwd=literal", "%70wd=literal", "pwd=literal&action=login"] {
+        let context = wp.analyze(login_request("", "POST", body)).await.unwrap();
+        assert_eq!(context.confirmed_fields, ["pwd"]);
+        assert_eq!(context.family, "member_login");
+        assert_eq!(context.consumer_profile.as_deref(), Some("fictional-site"));
+        let serialized = serde_json::to_string(&context).unwrap();
+        assert!(!serialized.contains("literal"));
+        assert!(!serialized.contains("confirmed_fields"));
+    }
+    let wp = policy();
+    let context = wp
+        .analyze(login_request("", "POST", "pwd=literal"))
+        .await
+        .unwrap();
+    assert!(context.confirmed_fields.is_empty());
+    let mut input = request("/wp-login.php", "", "POST");
+    input.body = Bytes::from_static(b"pwd=literal");
+    input.content_type = "application/x-www-form-urlencoded";
+    assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+}
+
+#[tokio::test]
+async fn login_actions_get_overrides_methods_and_rest_cannot_borrow_password_binding() {
+    let wp = login_policy();
+    for query in [
+        "action=logout",
+        "action=rp",
+        "key=",
+        "checkemail=0",
+        "rest_route=/fixture/v1/x",
+        "rest_route=0",
+        "action=custom",
+    ] {
+        assert!(
+            wp.analyze(login_request(query, "POST", "pwd=literal"))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+    for body in [
+        "pwd=literal&action=logout",
+        "pwd=literal&rest_route=/fixture/v1/x",
+        "pwd=",
+        "pwd=0",
+        "pwd=%30",
+    ] {
+        assert!(
+            wp.analyze(login_request("", "POST", body))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+    for method in ["GET", "PUT", "PATCH", "DELETE", "HEAD"] {
+        assert!(
+            wp.analyze(login_request("", method, "pwd=literal"))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+    assert!(
+        wp.analyze(login_request(
+            "action=logout",
+            "POST",
+            "pwd=literal&action=login"
+        ))
+        .await
+        .unwrap()
+        .confirmed_fields
+        .is_empty()
+    );
+    let mut input = login_request("", "POST", "{\"pwd\":\"literal\"}");
+    input.content_type = "application/json";
+    assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+    // GP excludes cookies; non-REST method hints do not change wp_signon POST.
+    let headers = vec![
+        ("Cookie".into(), "action=logout".into()),
+        ("X-HTTP-Method-Override".into(), "DELETE".into()),
+    ];
+    let mut input = login_request("_method=DELETE", "POST", "pwd=literal");
+    input.headers = &headers;
+    assert_eq!(wp.analyze(input).await.unwrap().confirmed_fields, ["pwd"]);
+}
+
+#[tokio::test]
+async fn php_password_arrays_and_alias_collisions_are_denied_and_single_aliases_unconfirmed() {
+    let wp = login_policy();
+    for body in [
+        "pwd[]=literal",
+        "pwd=literal&pwd=other",
+        "pwd=literal&%70wd=other",
+        "pwd=literal&+pwd=other",
+        "pwd=literal&pwd%00suffix=other",
+        "pwd[child]=literal",
+        "pwd=literal&pwd[]%00suffix=other",
+    ] {
+        assert_eq!(
+            wp.analyze(login_request("", "POST", body))
+                .await
+                .unwrap_err()
+                .0,
+            "wordpress_ambiguous_login_password"
+        );
+    }
+    for body in [
+        "+pwd=literal",
+        "pwd%00suffix=literal",
+        "%2570wd=literal",
+        "pwd.=literal",
+    ] {
+        assert!(
+            wp.analyze(login_request("", "POST", body))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn login_consumers_require_canonical_unique_paths_gp_and_evidence() {
+    for consumers in [
+        json!([{"path":"/member-entry/","request_order":"GP","evidence":"fixture"}]),
+        json!([{"path":"/member-entry","request_order":"GPC","evidence":"fixture"}]),
+        json!([{"path":"/member-entry","request_order":"GP","evidence":""}]),
+        json!([{"path":"/member-entry","request_order":"GP","evidence":"fixture"},
+            {"path":"/member-entry","request_order":"GP","evidence":"fixture"}]),
+    ] {
+        let modules = BTreeMap::from([
+            (
+                "wordpress".into(),
+                SourcedModule {
+                    profile_id: "wordpress-base".into(),
+                    layer: Layer::Application,
+                    settings: json!({"schema_version":1}),
+                },
+            ),
+            (
+                "wordpress-site".into(),
+                SourcedModule {
+                    profile_id: "fictional-site".into(),
+                    layer: Layer::Site,
+                    settings: json!({"schema_version":1,"login_consumers":consumers}),
+                },
+            ),
+        ]);
+        assert!(Wordpress::from_modules(&modules).is_err());
+    }
+}
 #[tokio::test]
 async fn query_override_precedes_header_and_preserves_head_options() {
     let wp = policy();

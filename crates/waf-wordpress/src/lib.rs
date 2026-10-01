@@ -32,6 +32,13 @@ pub struct MethodRule {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LoginConsumer {
+    path: String,
+    request_order: String,
+    evidence: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Site {
     schema_version: u32,
     #[serde(default = "root")]
@@ -42,6 +49,8 @@ struct Site {
     rest_entry_paths: Vec<String>,
     #[serde(default)]
     method_rules: Vec<MethodRule>,
+    #[serde(default)]
+    login_consumers: Vec<LoginConsumer>,
 }
 fn root() -> String {
     "/".into()
@@ -57,6 +66,7 @@ impl Default for Site {
             rest_prefix: prefix(),
             rest_entry_paths: Vec::new(),
             method_rules: Vec::new(),
+            login_consumers: Vec::new(),
         }
     }
 }
@@ -77,6 +87,10 @@ pub struct Context {
     pub path: String,
     #[serde(skip)]
     pub action: Option<String>,
+    #[serde(skip)]
+    pub confirmed_fields: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumer_profile: Option<String>,
 }
 #[derive(Debug)]
 pub struct Denial {
@@ -226,12 +240,24 @@ impl Wordpress {
                 .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
             || site.method_rules.len() > 512
             || site.rest_entry_paths.len() > 32
+            || site.login_consumers.len() > 32
         {
             return Err(bad("invalid_wordpress_site_bounds"));
         }
         for path in &site.rest_entry_paths {
             if path.len() > 512 || clean_path(path)? != *path {
                 return Err(bad("invalid_wordpress_rest_entry"));
+            }
+        }
+        let mut consumer_paths = BTreeSet::new();
+        for consumer in &site.login_consumers {
+            if consumer.path.len() > 512
+                || clean_path(&consumer.path)? != consumer.path
+                || consumer.request_order != "GP"
+                || consumer.evidence.trim().is_empty()
+                || !consumer_paths.insert(&consumer.path)
+            {
+                return Err(bad("invalid_wordpress_login_consumer"));
             }
         }
         let mut ids = BTreeSet::new();
@@ -279,6 +305,11 @@ impl Wordpress {
             max_parts,
         } = request;
         let path = clean_path(path)?;
+        let login_consumer = self
+            .site
+            .login_consumers
+            .iter()
+            .any(|consumer| consumer.path == path);
         let relative = if self.site.base_path == "/" {
             path.as_str()
         } else {
@@ -298,7 +329,9 @@ impl Wordpress {
                     .rest_entry_paths
                     .iter()
                     .any(|entry| entry == &path));
-        let names: &[&str] = if is_ajax || is_admin_post {
+        let names: &[&str] = if login_consumer && !is_admin {
+            &["action", "rest_route", "key", "checkemail"]
+        } else if is_ajax || is_admin_post {
             &["action"]
         } else if query_front {
             &["rest_route"]
@@ -313,6 +346,10 @@ impl Wordpress {
             .trim()
             .to_ascii_lowercase();
         let mut post = BTreeMap::new();
+        let mut password_count = 0;
+        let mut password_scalar = true;
+        let mut password_canonical = false;
+        let mut password_nonempty = false;
         // PHP populates $_POST only for wire POST forms; JSON and PUT bodies cannot select rest_route.
         if wire_method == "POST" && media == "application/x-www-form-urlencoded" {
             // Do not impose the small query bound on legitimate large form content.
@@ -325,6 +362,18 @@ impl Wordpress {
                     std::str::from_utf8(key).map_err(|_| bad("wordpress_invalid_form_key"))?,
                     true,
                 )?;
+                if login_consumer
+                    && !is_admin
+                    && normalized_key(&key).split('[').next() == Some("pwd")
+                {
+                    password_count += 1;
+                    password_scalar &= !normalized_key(&key).contains('[');
+                    // The shared form scanner binds single-decoded names. PHP
+                    // aliases need separate evidence; they cannot borrow pwd's
+                    // origin. Never decode or retain the password value here.
+                    password_canonical = key == "pwd";
+                    password_nonempty = !value.is_empty() && value != b"0" && value != b"%30";
+                }
                 if relevant(normalized_key(&key).split('[').next().unwrap_or(""), names) {
                     insert(
                         &mut post,
@@ -414,7 +463,7 @@ impl Wordpress {
             "administration"
         } else if rest_route.is_some() {
             "rest"
-        } else if relative == "/wp-login.php" {
+        } else if relative == "/wp-login.php" || login_consumer {
             "member_login"
         } else {
             "unqualified"
@@ -446,6 +495,38 @@ impl Wordpress {
             .get("action")
             .or_else(|| query_params.get("action"))
             .cloned();
+        let login_action = action.as_deref().is_none_or(|action| action == "login");
+        let action_agrees = match (post.get("action"), query_params.get("action")) {
+            (Some(post), Some(query)) => post == query,
+            _ => true,
+        };
+        let mut confirmed_fields = Vec::new();
+        if login_consumer
+            && family == "member_login"
+            && login_action
+            && wire_method == "POST"
+            && media == "application/x-www-form-urlencoded"
+        {
+            if password_count > 1 || !password_scalar {
+                return Err(bad("wordpress_ambiguous_login_password"));
+            }
+            if password_count == 1
+                && password_canonical
+                && password_nonempty
+                && action_agrees
+                && !query_params.contains_key("key")
+                && !query_params.contains_key("checkemail")
+                && !post.contains_key("rest_route")
+                && !query_params.contains_key("rest_route")
+            {
+                confirmed_fields.push("pwd");
+            }
+        }
+        let consumer_profile = if confirmed_fields.is_empty() {
+            None
+        } else {
+            self.site_profile_id.clone()
+        };
         Ok(Context {
             family,
             effective_method: effective,
@@ -453,6 +534,8 @@ impl Wordpress {
             rest_route,
             path,
             action,
+            confirmed_fields,
+            consumer_profile,
         })
     }
     pub fn check(&self, context: &Context, trusted: bool) -> Option<Denial> {

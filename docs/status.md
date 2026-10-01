@@ -1,5 +1,9 @@
 # Actual status — 2026-10-01
 
+## PHP parameter-name NUL consistency
+
+WordPress dispatch now applies PHP's decoded-name NUL truncation before leading-space/dot normalization. Encoded aliases of action, rest_route and _method therefore cannot evade explicit method policies, and colliding aliases remain duplicate/array ambiguities. One added semantic test covers query/form route selection and AJAX identity; expanded existing semantic/protocol cases cover overrides, colliding names and correlated denial before a neutral backend. The workspace passes 32 Rust cases and eighteen protocol scenarios. This fixes dispatch identity only; it introduces no field exceptions and does not establish site/browser/independent acceptance.
+
 ## Streaming body inspection
 
 The proxy now consumes normalized body views immediately into a bounded set of matching rule IDs rather than retaining body strings. All raw/decoded values remain inspected; rule provenance, effective-method exceptions, observation/enforcement and ban confidence are resolved after complete parsing. JSON uses a recursive visitor with per-object decoded-key equality checks and serde's depth bound, without building an AST or retaining array/scalar nodes. Original allowed bytes still forward unchanged. A detection cannot bypass validation of a later malformed suffix or duplicate key. Profile JSON retains its existing strict document parser.

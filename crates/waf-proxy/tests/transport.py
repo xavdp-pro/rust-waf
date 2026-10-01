@@ -273,7 +273,11 @@ class Transport(unittest.TestCase):
                 {'path':'/wp-admin/users.php','method':'GET'},
                 {'path':'/%77p-admin/plugins.php','method':'GET'},
                 {'path':'/wp-admin/admin-ajax.php?action=fixture_lookup','method':'POST'},
+                {'path':'/wp-admin/admin-ajax.php?action%00suffix=fixture_lookup','method':'POST'},
+                {'path':'/index.php?rest_route%00suffix=/fixture/v1/read-only','method':'POST'},
+                {'path':'/wp-json/fixture/v1/read-only?_method%00suffix=DELETE','method':'POST'},
                 {'path':'/','body':b'rest_route=/fixture/v1/read-only','headers':{'Content-Type':'application/x-www-form-urlencoded'}},
+                {'path':'/','body':b'rest_route%00suffix=/fixture/v1/read-only','headers':{'Content-Type':'application/x-www-form-urlencoded'}},
             ]
             for case in denied:
                 before=len(self.received)

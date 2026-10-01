@@ -111,7 +111,13 @@ fn decode(input: &str, plus: bool) -> Result<String> {
     String::from_utf8(output).map_err(|_| bad("wordpress_invalid_utf8"))
 }
 fn normalized_key(key: &str) -> String {
-    key.trim_start_matches(' ').replace([' ', '.'], "_")
+    // PHP truncates decoded parameter names at NUL before normalizing spaces/dots.
+    // Dispatch aliases must share an identity, including duplicate/array checks.
+    key.split('\0')
+        .next()
+        .unwrap_or("")
+        .trim_start_matches(' ')
+        .replace([' ', '.'], "_")
 }
 fn relevant(name: &str, names: &[&str]) -> bool {
     names.contains(&name)

@@ -1,5 +1,7 @@
 //! WordPress semantics, separate from the application-independent shared engine.
+mod form_consumer;
 use bytes::Bytes;
+use form_consumer::FormConsumer;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,6 +53,8 @@ struct Site {
     method_rules: Vec<MethodRule>,
     #[serde(default)]
     login_consumers: Vec<LoginConsumer>,
+    #[serde(default)]
+    form_consumers: Vec<FormConsumer>,
 }
 fn root() -> String {
     "/".into()
@@ -67,6 +71,7 @@ impl Default for Site {
             rest_entry_paths: Vec::new(),
             method_rules: Vec::new(),
             login_consumers: Vec::new(),
+            form_consumers: Vec::new(),
         }
     }
 }
@@ -88,7 +93,7 @@ pub struct Context {
     #[serde(skip)]
     pub action: Option<String>,
     #[serde(skip)]
-    pub confirmed_fields: Vec<&'static str>,
+    pub confirmed_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_profile: Option<String>,
 }
@@ -241,6 +246,7 @@ impl Wordpress {
             || site.method_rules.len() > 512
             || site.rest_entry_paths.len() > 32
             || site.login_consumers.len() > 32
+            || site.form_consumers.len() > 32
         {
             return Err(bad("invalid_wordpress_site_bounds"));
         }
@@ -261,6 +267,9 @@ impl Wordpress {
             }
         }
         let mut ids = BTreeSet::new();
+        for consumer in &site.form_consumers {
+            consumer.validate(&site.base_path, &mut ids)?;
+        }
         let mut rules = Vec::new();
         for rule in &site.method_rules {
             if rule.id.is_empty()
@@ -345,6 +354,7 @@ impl Wordpress {
             .unwrap_or("")
             .trim()
             .to_ascii_lowercase();
+        let form_body = body.clone();
         let mut post = BTreeMap::new();
         let mut password_count = 0;
         let mut password_scalar = true;
@@ -519,7 +529,22 @@ impl Wordpress {
                 && !post.contains_key("rest_route")
                 && !query_params.contains_key("rest_route")
             {
-                confirmed_fields.push("pwd");
+                confirmed_fields.push("pwd".into());
+            }
+        }
+        if family == "ajax"
+            && wire_method == "POST"
+            && media == "application/x-www-form-urlencoded"
+            && !query_params.contains_key("action")
+        {
+            for consumer in &self.site.form_consumers {
+                if consumer.path == path
+                    && action.as_deref() == Some(consumer.action.as_str())
+                    && consumer.confirms(&form_body)?
+                    && !confirmed_fields.contains(&consumer.form_field)
+                {
+                    confirmed_fields.push(consumer.form_field.clone());
+                }
             }
         }
         let consumer_profile = if confirmed_fields.is_empty() {

@@ -482,3 +482,236 @@ fn unknown_modules_unknown_fields_and_weak_method_rules_fail_startup() {
         assert!(Wordpress::from_modules(&modules).is_err());
     }
 }
+
+fn form_settings() -> serde_json::Value {
+    json!({"schema_version":1,"form_consumers":[{
+        "id":"fixture.message","path":"/wp-admin/admin-ajax.php","action":"fixture_submit",
+        "request_order":"GP","arg_separator":"&","max_input_vars":1000,"max_input_nesting_level":64,
+        "form_field":"form[fields][1]","guards":[{"field":"form[id]","equals":"17"}],
+        "evidence":"fictional-required-textarea-handler-and-schema"}]})
+}
+fn form_request(body: &str) -> Request<'_> {
+    let mut input = request("/wp-admin/admin-ajax.php", "", "POST");
+    input.content_type = "application/x-www-form-urlencoded";
+    input.body = Bytes::copy_from_slice(body.as_bytes());
+    input
+}
+
+#[tokio::test]
+async fn ajax_form_consumer_confirms_only_original_qualified_leaf_without_values() {
+    let wp = wordpress(form_settings());
+    for body in [
+        "action=fixture_submit&form[id]=17&form[fields][1]=literal",
+        "%61ction=fixture_submit&%66orm%5Bid%5D=%31%37&form%5Bfields%5D%5B1%5D=literal",
+        "form[fields][1]=literal&form[id]=17&action=fixture_submit",
+        "action=fixture_submit&form[id]=17&form[fields][1]=literal&form[fields][2]=sibling",
+        "action=fixture_submit&form[id]=17&form[fields][1]=literal&form[fields][01]=sibling",
+        "action=fixture_submit&form[id]=17&form[fields][1]=literal%26form%5Bfields%5D%5B2%5D%3Dvalue",
+    ] {
+        let context = wp.analyze(form_request(body)).await.unwrap();
+        assert_eq!(context.confirmed_fields, ["form[fields][1]"], "{body}");
+        assert_eq!(context.family, "ajax");
+        assert_eq!(context.consumer_profile.as_deref(), Some("fictional-site"));
+        let record = serde_json::to_string(&context).unwrap();
+        assert!(!record.contains("literal") && !record.contains("form[fields]"));
+    }
+    let default = wordpress(json!({"schema_version":1}));
+    assert!(
+        default
+            .analyze(form_request(
+                "action=fixture_submit&form[id]=17&form[fields][1]=literal"
+            ))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn ajax_form_consumer_withholds_alias_tree_and_identity_ambiguity() {
+    let wp = wordpress(form_settings());
+    let prefix = "action=fixture_submit&form[id]=17&form[fields][1]=literal";
+    for suffix in [
+        "&form[fields][1]=second",
+        "&%66orm[fields][1]=second",
+        "&form[fields][1]",
+        "&form=scalar",
+        "&form[fields]=scalar",
+        "&form[fields][1][child]=scalar",
+        "&form[fields][1][]=scalar",
+        "&form[fields][]=scalar",
+        "&form[fields][1]ignored=scalar",
+        "&+form[fields][1]=second",
+        "&form%00tail[fields][1]=second",
+        "&form[fields][1%00tail]=second",
+        "&form[id]=18",
+        "&form[id][child]=18",
+        "&form[id]ignored=18",
+        "&other[]=unsupported",
+        "&unclosed[key=unsupported",
+    ] {
+        let context = wp
+            .analyze(form_request(&format!("{prefix}{suffix}")))
+            .await
+            .unwrap();
+        assert!(context.confirmed_fields.is_empty(), "{suffix}");
+    }
+    for body in [
+        "action=other&form[id]=17&form[fields][1]=literal",
+        "action=fixture_submit&form[id]=18&form[fields][1]=literal",
+        "action=fixture_submit&form[id]=17tail&form[fields][1]=literal",
+        "action=fixture_submit&form[fields][1]=literal",
+        "action=fixture_submit&form[id]=17&form[fields][01]=literal",
+        "action=fixture_submit&form[id]=17&form[fields][1]",
+        "action=fixture_submit&form[id]=17&%2566orm[fields][1]=literal",
+        "action=fixture_submit&form[id]=17&+form[fields][1]=literal",
+        "action=fixture_submit&form[id]=17&form[fields][1]ignored=literal",
+        "form[fields][1]=literal&form=scalar&action=fixture_submit&form[id]=17",
+    ] {
+        assert!(
+            wp.analyze(form_request(body))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty(),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ajax_form_consumer_cannot_borrow_other_dispatch_methods_media_or_query_action() {
+    let wp = wordpress(form_settings());
+    let body = "action=fixture_submit&form[id]=17&form[fields][1]=literal";
+    for method in ["GET", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] {
+        let mut input = form_request(body);
+        input.wire_method = method;
+        assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+    }
+    for media in ["application/json", "text/plain", "application/octet-stream"] {
+        let mut input = form_request(body);
+        input.content_type = media;
+        assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+    }
+    for path in [
+        "/index.php",
+        "/wp-admin/admin-post.php",
+        "/wp-admin/admin-ajax.php/alternate",
+        "/wp-json/fixture/v1/submit",
+    ] {
+        let mut input = form_request(body);
+        input.path = path;
+        assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+    }
+    for query in [
+        "action=fixture_submit",
+        "action=other",
+        "%61ction=fixture_submit",
+    ] {
+        let mut input = form_request(body);
+        input.query = query;
+        assert!(wp.analyze(input).await.unwrap().confirmed_fields.is_empty());
+    }
+    // Method hints do not change the actual AJAX POST dispatch in WordPress.
+    let mut input = form_request(body);
+    input.query = "_method=DELETE";
+    let context = wp.analyze(input).await.unwrap();
+    assert_eq!(context.effective_method, "POST");
+    assert_eq!(context.confirmed_fields, ["form[fields][1]"]);
+}
+
+#[tokio::test]
+async fn ajax_form_consumer_respects_php_input_count_and_nesting_contract() {
+    let mut settings = form_settings();
+    settings["form_consumers"][0]["max_input_vars"] = json!(3);
+    settings["form_consumers"][0]["max_input_nesting_level"] = json!(2);
+    let wp = wordpress(settings);
+    let body = "action=fixture_submit&form[id]=17&form[fields][1]=literal";
+    assert_eq!(
+        wp.analyze(form_request(body))
+            .await
+            .unwrap()
+            .confirmed_fields,
+        ["form[fields][1]"]
+    );
+    for extra in ["&other=value", "&other[a][b][c]=value"] {
+        assert!(
+            wp.analyze(form_request(&format!("{body}{extra}")))
+                .await
+                .unwrap()
+                .confirmed_fields
+                .is_empty()
+        );
+    }
+    let wp = wordpress(form_settings());
+    let long_key = format!("{body}&{}=unclassified", "a".repeat(193));
+    assert!(
+        wp.analyze(form_request(&long_key))
+            .await
+            .unwrap()
+            .confirmed_fields
+            .is_empty()
+    );
+}
+
+#[test]
+fn ajax_form_consumer_invalid_contracts_fail_startup() {
+    let rejects = |settings: serde_json::Value| {
+        let modules = BTreeMap::from([
+            (
+                "wordpress".into(),
+                SourcedModule {
+                    profile_id: "wordpress-base".into(),
+                    layer: Layer::Application,
+                    settings: json!({"schema_version":1}),
+                },
+            ),
+            (
+                "wordpress-site".into(),
+                SourcedModule {
+                    profile_id: "fictional-site".into(),
+                    layer: Layer::Site,
+                    settings,
+                },
+            ),
+        ]);
+        assert!(Wordpress::from_modules(&modules).is_err());
+    };
+    for (key, value) in [
+        ("request_order", json!("GPC")),
+        ("arg_separator", json!("&;")),
+        ("max_input_vars", json!(0)),
+        ("max_input_vars", json!(10001)),
+        ("max_input_nesting_level", json!(1)),
+        ("max_input_nesting_level", json!(65)),
+        ("path", json!("/other.php")),
+        ("action", json!("")),
+        ("evidence", json!(" ")),
+        ("form_field", json!("action")),
+        ("form_field", json!("form[]")),
+        ("guards", json!([])),
+        ("guards", json!([{"field":"form","equals":"17"}])),
+        (
+            "guards",
+            json!([{"field":"action","equals":"fixture_submit"}]),
+        ),
+        (
+            "guards",
+            json!([{"field":"form[id]","equals":"17"},{"field":"form[id]","equals":"17"}]),
+        ),
+        ("guards", json!([{"field":"form[id]","equals":"17.0"}])),
+        ("unknown", json!(true)),
+    ] {
+        let mut settings = form_settings();
+        settings["form_consumers"][0][key] = value;
+        rejects(settings);
+    }
+    let mut duplicate = form_settings();
+    let consumer = duplicate["form_consumers"][0].clone();
+    duplicate["form_consumers"]
+        .as_array_mut()
+        .unwrap()
+        .push(consumer);
+    rejects(duplicate);
+}

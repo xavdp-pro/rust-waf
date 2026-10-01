@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Explicit AJAX nested form consumer contract
+
+The WordPress site module accepts optional evidence-bearing form_consumers with the canonical AJAX endpoint, POST action, stable scalar identity guards and explicit FPM parsing assumptions. Canonical nested leaves require unique original bindings; PHP aliases, append/malformed/ignored-suffix keys, ancestor/descendant collisions and count/depth excess withhold confirmation. No consumer is enabled by default. WordPress still performs nonce/token, timing, role and ownership checks; this API does not authorize a complete submission. Unsupported array shapes require further parser support and qualification before enabling those flows.
+
+All 61 Rust semantic cases and 25 neutral HTTP groups pass, including five new application tests and two correlated protocol groups. Allowed bytes remain exact, unmatched sibling/query/dispatch/media/method/identity cases do not reach the neutral backend, and sibling-hit diagnostics remain body-free. Clippy with warnings denied, formatting, foundation, scorer and aggregation checks pass. Actual installation consumers, positive/negative plugin processing, artifact resources/deployment and Browser/independent/performance acceptance remain unqualified. See [the consumer contract](../crates/waf-wordpress/README.md).
+
 ## Canonical nested form origins
 
 The core accepts bounded canonical bracket selectors for original URL-encoded leaf values. Duplicate/ancestor/descendant writes and related malformed paths withhold exceptions; disjoint sibling arrays remain separate. Numeric keys are not coerced. Configured paths affect deterministic fingerprints and never create route-wide exceptions. Application confirmation remains mandatory; the WordPress adapter currently confirms only the explicitly qualified login pwd binding. This source change does not qualify another plugin or implement PHP nested-key normalization.

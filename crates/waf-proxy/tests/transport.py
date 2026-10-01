@@ -162,7 +162,7 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False, login=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False, login=False, consumer=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
         if gate:config['ban_lookup_socket']=str(self.tmp/(name+'-lookup.sock'))
@@ -186,6 +186,13 @@ class Transport(unittest.TestCase):
             if login:
                 site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'login_consumers':[
                     {'path':'/feedback','request_order':'GP','evidence':'fictional-wp-signon-field-consumer'}]}}]
+            if consumer:
+                site['exceptions'][0]['path_pattern']='^/wp-admin/admin-ajax[.]php$'
+                site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'form_consumers':[
+                    {'id':'fixture.message','path':'/wp-admin/admin-ajax.php','action':'fixture_submit',
+                     'request_order':'GP','arg_separator':'&','max_input_vars':1000,'max_input_nesting_level':64,
+                     'form_field':'form[fields][1]','guards':[{'field':'form[id]','equals':'17'}],
+                     'evidence':'fictional-handler-and-form-schema'}]}}]
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -510,6 +517,59 @@ class Transport(unittest.TestCase):
                 self.assertFalse(event['backend_attempted'])
                 self.assertIsNone(event['matches'][0]['exception_profile'])
                 self.assertNotIn('unapplied_field_profiles',event['matches'][0])
+
+    def test_23_nested_wordpress_consumer_preserves_bytes_and_scoped_negative_boundaries(self):
+        base=b'action=fixture_submit&form[id]=17&form[fields][1]=forbidden-sentinel'
+        with self.alternate_proxy('nested-consumer',exception=True,field='form[fields][1]',consumer=True) as (path,events):
+            for body in [base,base+b'&form[fields][2]=benign',
+                         b'%61ction=fixture_submit&form[id]=%31%37&%66orm%5Bfields%5D%5B1%5D=forbidden%2Dsentinel']:
+                before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=body,socket_path=path,
+                    headers={'Content-Type':'application/x-www-form-urlencoded'})
+                self.assertEqual(status,200);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(body).hexdigest())
+                record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertTrue(record['backend_attempted']);self.assertFalse(record['ban_started'])
+                self.assertEqual(record['matches'][0]['exception_profile'],'example-site')
+                self.assertEqual(record['application']['consumer_profile'],'example-site')
+                self.assertNotIn('confirmed_fields',record['application'])
+            negatives=[
+                (base+b'&form[fields][1]=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base+b'&form=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base+b'&form[fields][1][child]=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base+b'&form[fields][1]ignored=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base+b'&+form[fields][1]=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base+b'&form%00tail[fields][1]=other','POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base.replace(b'form[id]=17',b'form[id]=18'),'POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base.replace(b'fixture_submit',b'other'),'POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base,'POST','/wp-admin/admin-ajax.php?action=fixture_submit','application/x-www-form-urlencoded'),
+                (base,'GET','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base,'DELETE','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base,'POST','/wp-admin/admin-post.php','application/x-www-form-urlencoded'),
+                (base,'POST','/wp-admin/admin-ajax.php','text/plain'),
+                (base+b'&other=x'*998,'POST','/wp-admin/admin-ajax.php','application/x-www-form-urlencoded'),
+                (base,'POST','/wp-admin/admin-ajax.php?other=forbidden-sentinel','application/x-www-form-urlencoded'),
+            ]
+            for body,method,route,media in negatives:
+                before=len(self.received)
+                status,headers,_=self.request(method=method,path=route,body=body,socket_path=path,
+                    headers={'Content-Type':media,'X-Waf-Confirmed-Field':'form[fields][1]'})
+                self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
+                record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(record['backend_attempted']);self.assertFalse(record['ban_started'])
+
+    def test_24_nested_sibling_hit_remains_unexcepted_with_body_free_candidate_diagnostics(self):
+        body=b'action=fixture_submit&form[id]=17&form[fields][1]=forbidden-sentinel&form[fields][2]=forbidden-sentinel'
+        with self.alternate_proxy('nested-candidate',exception=True,field='form[fields][1]',consumer=True) as (path,events):
+            before=len(self.received)
+            status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=body,socket_path=path,
+                headers={'Content-Type':'application/x-www-form-urlencoded'})
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+            record=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+            self.assertFalse(record['backend_attempted'])
+            self.assertIsNone(record['matches'][0]['exception_profile'])
+            self.assertEqual(record['matches'][0]['unapplied_field_profiles'],['example-site'])
+            self.assertNotIn('forbidden-sentinel',json.dumps(record))
 
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()

@@ -10,7 +10,7 @@ profiles=[json.loads(p.read_text()) for p in (root/'profiles').rglob('*.json')]
 registry={p['profile_id']:p for p in profiles}
 if len(registry)!=len(profiles):raise SystemExit('Duplicate profile identifiers')
 for profile in profiles:
- if profile['status']!='design-only':raise SystemExit('Example must state its design-only status')
+ if profile['metadata']['status']!='design-only':raise SystemExit('Example must state its design-only status')
  seen=set();node=profile
  while node is not None:
   name=node['profile_id']
@@ -24,7 +24,7 @@ if core['cloudflare']['per_request_api_calls'] or core['cloudflare']['per_detect
 if registry['wordpress-base']['extends']!='core-base' or registry['example-site']['extends']!='wordpress-base':raise SystemExit('Layer structure changed')
 patterns=[re.compile(r'gh[pousr]_[A-Za-z0-9]{30,}'),re.compile(r'github_pat_[A-Za-z0-9_]{50,}'),re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')]
 for file in root.rglob('*'):
- if not file.is_file() or '.git' in file.parts or '__pycache__' in file.parts:continue
+ if not file.is_file() or '.git' in file.parts or '__pycache__' in file.parts or 'target' in file.relative_to(root).parts:continue
  if file.name.startswith('.env') or file.suffix in {'.pem','.key','.p12','.pfx','.sql','.dump','.db','.token'}:raise SystemExit('Private artifact found: '+str(file.relative_to(root)))
  text=file.read_text(errors='replace')
  if any(pattern.search(text) for pattern in patterns):raise SystemExit('Possible credential material: '+str(file.relative_to(root)))

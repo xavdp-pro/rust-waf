@@ -2,7 +2,7 @@
 
 ## Step 01 — Contracts and composition
 
-Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
+Profile composition is implemented with eight passing integration tests; the request event format is pending transport implementation. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.
 
 ## Step 02 — Rust proxy and neutral test backend
 

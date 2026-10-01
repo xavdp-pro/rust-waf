@@ -17,7 +17,7 @@ Read README.md, docs/status.md, docs/architecture.md, and docs/roadmap.md before
 
 ## Evidence and publication
 
-The Rust engine does not exist yet. Do not claim protection or complete qualification from configuration, status codes, source declarations, or synthetic fixtures alone. Separate observation, independently labeled decisions, backend proof, and actual user workflows. Missing metrics remain absent.
+Rust profile composition exists; transport and request inspection are not yet implemented. Do not claim protection or complete qualification from configuration, status codes, source declarations, or synthetic fixtures alone. Separate observation, independently labeled decisions, backend proof, and actual user workflows. Missing metrics remain absent.
 
 This repository is public. Never commit credentials, keys, tokens, database dumps, customer data, cookies, sessions, real access inventories, raw logs, or site-specific exceptions. Use fictional fixtures. A reusable tool must not contain private deployment names or paths. Public publication does not authorize any deployment.
 

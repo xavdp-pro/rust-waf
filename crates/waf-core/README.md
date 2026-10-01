@@ -1,3 +1,5 @@
-# waf-core
+# Shared engine
 
-Planned application-independent Rust engine. No crate exists yet. It will handle normalization, inspection, common rules, profile composition, decisions, and events. See roadmap steps 01–03.
+Implemented: strict profile parsing, deterministic composition, limits, immutable invariants, rule provenance and explicit site exceptions. Run `cargo test -p waf-core --locked`.
+
+Request normalization, rule execution and measurements are the next implementation step. No application routes or installation assumptions belong in this crate.

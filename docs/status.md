@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Bounded origin measurement window
+
+Origin aggregation now reads a snapshot of at most the final 64 MiB, retains at most 25,000 validated projected records and discards oversized 64 KiB lines and partial prefix fragments. Appending during collection cannot extend the snapshot budget. Invalid record shapes, duration/counter types and nonfinite durations are rejected rather than crashing aggregation. Unknown input fields are discarded. JSON and the English read-only page expose window size, retention losses and rejected records; counts explicitly describe this recent window, not lifetime totals.
+
+Six focused origin tests cover sparse large files, exact/partial boundaries, retention, growth during parsing, oversized-line fragments and malformed/sensitive extra fields. Existing WAF aggregation, foundation and scorer checks pass. This changes measurement robustness only; independent effectiveness, matched performance and deployment proof remain separate requirements. Reproduce with `python3 observability/test_origin_metrics.py`.
+
 ## Explicit WordPress login binding
 
 Sites can now declare evidence-bearing login_consumers with a canonical path and verified GP request order. The adapter confirms pwd only for the qualified scalar POST/login consumer, withholds confirmation for GET key/checkemail overrides, action conflicts/other actions, empty values, alternate dispatch, methods and formats, and rejects PHP array/alias collisions. The gateway supplies these confirmations after application checks; the site still needs a scoped form_field exception. No login consumer or password exception is enabled in the public base profiles. No password is retained in application context or decisions.

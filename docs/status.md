@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Unapplied field candidate observability
+
+Optional unapplied_field_profiles record configured profile identities when at least one scoped, adapter-confirmed field occurrence exists but the rule remains unexcepted. A bounded field-range search preserves full haystack anchor/boundary context and detects local occurrences even after an earlier unscoped hit or in a later decoded view. Names, values and match positions are not serialized. Forwarding, effective scopes, confidence and ban eligibility still depend on the existing exception_profile decision.
+
+Three core tests, expanded protocol boundaries and a new reliable-ban/observe protocol group verify these semantics. The collector separates applied exceptions from unapplied candidates and deduplicates per rule/profile. All 52 Rust cases and 22 neutral HTTP groups pass, with clippy, formatting, aggregation, foundation and scorer checks. Artifact-specific resources and actual deployed compatibility/collection remain pending; do not infer deployment or independent effectiveness from this checkpoint.
+
 ## Multiple form fields
 
 The core now checks all accepting pattern spans using earliest-start tags on bounded Thompson states. It aggregates touched scalar fields across raw/decoded body views and requires a separate eligible exception plus adapter confirmation for every field. Cross-field, sibling, query/header/path and ambiguous bindings remain unexcepted. Zero-length rules and internal ordering/disagreement failures deny forwarding. Match/exception provenance and forwarded bytes remain unchanged.

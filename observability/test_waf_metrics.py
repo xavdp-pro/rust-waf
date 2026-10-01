@@ -29,6 +29,16 @@ with tempfile.TemporaryDirectory() as directory:
     result=summarize(source,True)
     assert result['policy_matches']=={'fictional.method-policy':1} and result['rule_matches']=={}
     assert 'fictional.method-policy' in block(result)
+    event['matches']=[{'rule_id':'fictional.rule','profile_id':'fictional-core','exception_profile':None,'unapplied_field_profiles':['fictional-site','fictional-site',None]}]
+    event['backend_attempted']=False
+    source.write_text(json.dumps(event)+'\n')
+    result=summarize(source,True)
+    assert result['exceptions']=={} and result['unapplied_field_profiles']=={'fictional-site':1}
+    assert result['backend_attempts']==0 and 'Unapplied qualified field candidates' in block(result)
+    event['matches'][0]['exception_profile']='fictional-site'
+    source.write_text(json.dumps(event)+'\n')
+    result=summarize(source,True)
+    assert result['exceptions']=={'fictional-site':1} and result['unapplied_field_profiles']=={}
     source.write_bytes(b'x'*65537)
     try:summarize(source)
     except ValueError:pass

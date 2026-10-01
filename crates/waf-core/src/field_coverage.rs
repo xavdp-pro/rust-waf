@@ -11,6 +11,7 @@ type Result<T> = std::result::Result<T, PolicyError>;
 #[derive(Default)]
 pub(crate) struct Coverage {
     pub fields: BTreeSet<String>,
+    pub candidates: BTreeSet<String>,
     pub unscoped: bool,
 }
 

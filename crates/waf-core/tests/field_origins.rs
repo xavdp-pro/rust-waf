@@ -347,3 +347,65 @@ async fn all_alternatives_and_cross_field_matches_remain_unexcepted() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn unapplied_candidates_preserve_blocking_and_disclose_profiles_only() {
+    let i = multiple_inspector("needle|needle.*tail");
+    let request = scan(
+        &i,
+        "other=needle&secret=nee%2564lePRIVATE_SENTINEL&content=needle&tail=tail",
+    )
+    .await;
+    let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"]);
+    assert!(hits[0].exception_profile.is_none());
+    assert!(hits[0].high_confidence);
+    assert_eq!(hits[0].unapplied_field_profiles, ["example-site"]);
+    let encoded = serde_json::to_string(&hits).unwrap();
+    assert!(!encoded.contains("PRIVATE_SENTINEL"));
+    assert!(!encoded.contains("\"secret\""));
+    for (method, fields) in [
+        ("GET", vec!["secret", "content"]),
+        ("POST", vec![]),
+        ("POST", vec!["unknown"]),
+    ] {
+        let hits = i.inspect_scanned_with_fields(&request, method, &fields);
+        assert!(hits[0].exception_profile.is_none());
+        assert!(hits[0].unapplied_field_profiles.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn duplicate_bindings_and_global_anchors_do_not_invent_candidates() {
+    for (pattern, body) in [
+        ("needle", "secret=needle&secret=benign&other=needle"),
+        ("needle$", "secret=needle&other=needle"),
+        (r"\bneedle\b", "secret=needleX&other=needle"),
+    ] {
+        let i = inspector(pattern);
+        let request = scan(&i, body).await;
+        let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret"]);
+        assert!(hits[0].exception_profile.is_none());
+        assert!(hits[0].unapplied_field_profiles.is_empty(), "{pattern}");
+    }
+}
+
+#[tokio::test]
+async fn fully_applied_exceptions_and_unmatched_fields_have_no_unapplied_candidates() {
+    let i = multiple_inspector("needle");
+    let request = scan(&i, "secret=needle&content=needle").await;
+    let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret", "content"]);
+    assert!(hits[0].exception_profile.is_some());
+    assert!(hits[0].unapplied_field_profiles.is_empty());
+    let request = i
+        .scan(
+            "/form/",
+            "q=needle",
+            "application/x-www-form-urlencoded",
+            Bytes::from_static(b"secret=benign"),
+        )
+        .await
+        .unwrap();
+    let hits = i.inspect_scanned_with_fields(&request, "POST", &["secret"]);
+    assert!(hits[0].exception_profile.is_none());
+    assert!(hits[0].unapplied_field_profiles.is_empty());
+}

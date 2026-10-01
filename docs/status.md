@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Multiple form fields
+
+The core now checks all accepting pattern spans using earliest-start tags on bounded Thompson states. It aggregates touched scalar fields across raw/decoded body views and requires a separate eligible exception plus adapter confirmation for every field. Cross-field, sibling, query/header/path and ambiguous bindings remain unexcepted. Zero-length rules and internal ordering/disagreement failures deny forwarding. Match/exception provenance and forwarded bytes remain unchanged.
+
+One exhaustive differential scanner test and two multi-field integration tests cover all-match alternatives, overlap, anchors/Unicode boundaries, decoding, duplicate aliases and independent confirmation/method scopes. Forty-nine Rust cases and twenty-one neutral HTTP groups pass with clippy, formatting, foundation and scorer checks. Current default/WordPress consumers do not automatically confirm additional fields. Actual plugin consumers, JSON/multipart origins, partial-exception statistics, deployed candidate resources and full acceptance remain pending. See [field coverage scope and proof](form-field-origins.md).
+
 ## Bounded origin measurement window
 
 Origin aggregation now reads a snapshot of at most the final 64 MiB, retains at most 25,000 validated projected records and discards oversized 64 KiB lines and partial prefix fragments. Appending during collection cannot extend the snapshot budget. Invalid record shapes, duration/counter types and nonfinite durations are rejected rather than crashing aggregation. Unknown input fields are discarded. JSON and the English read-only page expose window size, retention losses and rejected records; counts explicitly describe this recent window, not lifetime totals.

@@ -42,12 +42,30 @@ class Transport(unittest.TestCase):
             def respond(self):
                 body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 cls.received.append({'id':self.headers.get('X-Request-ID'), 'sha256':hashlib.sha256(body).hexdigest(), 'path':self.path, 'method':self.command, 'headers':dict(self.headers)})
+                if self.path.startswith('/representation/'):
+                    representation=b'representation-bytes'
+                    status=304 if '/cached' in self.path else 204 if self.path.endswith(('/empty','/empty-invalid')) else 200
+                    self.send_response(status)
+                    if status!=204 and not self.path.endswith('/unknown'):
+                        self.send_header('Content-Length',str(1000000 if self.path.endswith('/large') else len(representation)))
+                    if self.path.endswith('/empty-invalid'):
+                        self.send_header('Content-Length','20')
+                    if self.path.endswith('/cached-duplicate'):
+                        self.send_header('Content-Length','21')
+                    if self.path.endswith('/cached-invalid'):
+                        self.send_header('Content-Length','+20')
+                    self.send_header('ETag','"fixture-version"')
+                    self.send_header('Connection','close')
+                    self.end_headers()
+                    if self.command!='HEAD' and status==200:
+                        self.wfile.write(representation[:3] if self.path.endswith('/truncated') else representation)
+                    return
                 self.send_response(200)
                 self.send_header('Content-Length', str(len(body)))
                 self.send_header('Set-Cookie','member=fixture; HttpOnly')
                 self.end_headers()
                 self.wfile.write(body)
-            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = respond
+            do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = respond
         cls.backend = UnixServer(str(cls.tmp/'backend.sock'), Backend)
         cls.thread = threading.Thread(target=cls.backend.serve_forever, daemon=True)
         cls.thread.start()
@@ -363,6 +381,47 @@ class Transport(unittest.TestCase):
         self.assertEqual(status,200);self.assertEqual(reply,body)
         self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(body).hexdigest())
         self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+    def test_18_head_and_bodyless_response_representation_metadata(self):
+        def raw_response(method,path):
+            # Inspect actual wire bytes; HTTP clients hide content on HEAD/304.
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as sock:
+                sock.settimeout(3);sock.connect(str(self.tmp/'proxy.sock'))
+                sock.sendall((method+' '+path+' HTTP/1.1\r\nHost: localhost\r\nX-Waf-Client-IP: 198.51.100.25\r\nX-Waf-Admin-Friend: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n').encode())
+                wire=b''
+                while chunk:=sock.recv(8192):wire+=chunk
+            head,body=wire.split(b'\r\n\r\n',1)
+            lines=head.decode().split('\r\n')
+            headers={name.lower():value.strip() for name,value in (line.split(':',1) for line in lines[1:])}
+            return int(lines[0].split()[1]),headers,body
+        cases=[('GET','/representation/normal',200,'20',b'representation-bytes'),
+               ('HEAD','/representation/normal',200,'20',b''),
+               ('HEAD','/representation/large',200,'1000000',b''),
+               ('HEAD','/representation/unknown',200,None,b''),
+               ('GET','/representation/cached',304,'20',b''),
+               ('HEAD','/representation/cached',304,'20',b''),
+               ('GET','/representation/empty',204,None,b''),
+               ('GET','/representation/empty-invalid',204,None,b'')]
+        for method,path,expected,length,payload in cases:
+            with self.subTest(method=method,path=path):
+                before=len(self.received)
+                status,headers,body=raw_response(method,path)
+                self.assertEqual(status,expected)
+                self.assertEqual(headers.get('content-length'),length)
+                self.assertEqual(body,payload)
+                self.assertEqual(headers['etag'],'"fixture-version"')
+                self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                event=next(r for r in [json.loads(line) for line in (self.tmp/'events.txt').read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+                self.assertTrue(event['backend_attempted'])
+                self.assertEqual(event['decision'],'allow')
+        # A normal response's declared length remains a framing requirement.
+        for path in ['/representation/truncated','/representation/cached-duplicate','/representation/cached-invalid']:
+            status,headers,_=self.request(method='GET',path=path,body=b'')
+            self.assertEqual(status,502)
+            event=next(r for r in [json.loads(line) for line in (self.tmp/'events.txt').read_text().splitlines()] if r['request_id']==headers['x-request-id'])
+            self.assertEqual(event['reason'],'backend_unavailable_or_response_limit')
+            self.assertTrue(event['backend_attempted'])
+        self.assertEqual(self.assert_denied_before_backend(method='HEAD',path='/representation/normal?x=forbidden-sentinel',body=b''),403)
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

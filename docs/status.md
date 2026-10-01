@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Response representation metadata
+
+The gateway preserves validated backend Content-Length when forwarding unchanged bytes, including HEAD and 304 representation metadata. A metadata-only body adapter prevents Hyper from dropping the nonzero length on GET/304; wire checks confirm no payload is sent on HEAD, 204 or 304. Missing HEAD length stays absent, and representation length above the response-body budget is accepted without allocating or receiving that content. Invalid/duplicate backend lengths and truncated ordinary responses return 502. A denied HEAD still has no neutral-backend receipt. This fixes transport compatibility only; field exceptions and site/browser acceptance remain pending.
+
+The added nineteenth protocol group first reproduced four metadata failures on the previous binary and now passes eight raw-wire response cases, three backend-framing failures and a correlated pre-backend HEAD denial. Thirty-two Rust semantic/contract/inspection/ban cases, all nineteen HTTP groups, clippy, formatting, foundation and scorer checks pass. Reproduce with the commands below. The expected HEAD/304 distinction follows [RFC 9110 section 8.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-8.6).
+
 ## PHP parameter-name NUL consistency
 
 WordPress dispatch now applies PHP's decoded-name NUL truncation before leading-space/dot normalization. Encoded aliases of action, rest_route and _method therefore cannot evade explicit method policies, and colliding aliases remain duplicate/array ambiguities. One added semantic test covers query/form route selection and AJAX identity; expanded existing semantic/protocol cases cover overrides, colliding names and correlated denial before a neutral backend. The workspace passes 32 Rust cases and eighteen protocol scenarios. This fixes dispatch identity only; it introduces no field exceptions and does not establish site/browser/independent acceptance.

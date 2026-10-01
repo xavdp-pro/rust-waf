@@ -4,14 +4,16 @@
   "layer": "site",
   "version": "0.1.0-design",
   "extends": "wordpress-base",
-  "status": "design-only",
-  "hostname": "example.test",
-  "friendly_cidrs": [
-    "198.51.100.10/32"
-  ],
-  "ingress_mode": "cloudflare-tunnel",
-  "route_policy_status": "unqualified_example",
-  "qualified_routes": [],
-  "ban_adapter": "local-http-planned",
-  "notice": "Fictional example, not an active deployment or real access policy."
+  "metadata": {
+    "status": "design-only",
+    "hostname": "example.test",
+    "friendly_cidrs": [
+      "198.51.100.10/32"
+    ],
+    "ingress_mode": "cloudflare-tunnel",
+    "route_policy_status": "unqualified_example",
+    "qualified_routes": [],
+    "ban_adapter": "local-http-planned",
+    "notice": "Fictional example, not an active deployment or real access policy."
+  }
 }

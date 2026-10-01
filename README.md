@@ -2,7 +2,7 @@
 
 An open-source Rust WAF foundation with a shared engine, a generic WordPress profile, and independently maintained site specializations. Licensed under MIT.
 
-**Current status: design and project foundation. The Rust engine and HTTP proxy have not been implemented. This repository is not a deployable WAF.**
+**Current status: Rust profile composition is implemented and tested. HTTP forwarding and inspection are not implemented yet. This repository is not a deployable WAF.**
 
 ## Start here
 
@@ -15,7 +15,7 @@ An open-source Rust WAF foundation with a shared engine, a generic WordPress pro
 ## Repository layout
 
 ```text
-crates/waf-core/         planned application-independent Rust engine
+crates/waf-core/         profile composition; application-independent inspection planned
 crates/waf-proxy/        planned HTTP transport and engine integration
 profiles/core/          shared design contract
 profiles/wordpress/     generic WordPress design profile
@@ -42,4 +42,4 @@ python3 tools/check_repository.py
 python3 observability/evaluate_waf.py --self-test
 ```
 
-These commands check the foundation and a synthetic scoring fixture; they do not test a Rust WAF. JSON profiles are design examples, not active configuration. No hosted CI or scheduled automation is enabled in this initial foundation.
+These Python commands check the foundation and a synthetic scoring fixture. Run `cargo test --workspace --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings` to verify Rust composition. The examples parse and compose but have no protection rules. No hosted CI or scheduled automation is enabled.

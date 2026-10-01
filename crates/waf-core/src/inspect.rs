@@ -117,7 +117,8 @@ pub async fn normalize(
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if media == "application/json" || media.ends_with("+json") {
+    // A Content-Type on a bodyless request does not create a JSON document.
+    if !body.is_empty() && (media == "application/json" || media.ends_with("+json")) {
         let parsed: StrictJson =
             serde_json::from_slice(&body).map_err(|_| error("invalid_or_ambiguous_json"))?;
         let mut strings = Vec::new();

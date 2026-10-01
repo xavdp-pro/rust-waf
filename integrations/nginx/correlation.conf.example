@@ -1,0 +1,10 @@
+# http{} context. A gateway response ID correlates origin, gateway, backend and PHP.
+map $upstream_http_x_request_id $waf_correlation_id {
+    "~^[a-f0-9]{32}$" $upstream_http_x_request_id;
+    default $request_id;
+}
+log_format waf_backend escape=json
+    '{"id":"$http_x_request_id","status":$status,"php":"$upstream_addr","seconds":$request_time}';
+# Add X-Request-ID $waf_correlation_id always in the PUBLIC server. The proxy
+# include hides its upstream copy, preventing duplicate response headers.
+# Generate private logs without query strings, bodies, cookies or client IPs.

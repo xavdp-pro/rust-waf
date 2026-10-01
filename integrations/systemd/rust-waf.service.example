@@ -1,0 +1,33 @@
+[Unit]
+Description=Inspect complete dynamic HTTP requests
+After=nginx.service
+Requires=nginx.service
+
+[Service]
+Type=simple
+User=rust-waf
+Group=www-data
+RuntimeDirectory=rust-waf
+RuntimeDirectoryMode=0750
+UMask=0027
+# Do not derive a large worker pool from the hypervisor CPU count.
+Environment=TOKIO_WORKER_THREADS=4
+ExecStart=/usr/local/libexec/rust-waf /etc/rust-waf/runtime.json
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/rust-waf
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+MemoryMax=512M
+TasksMax=32
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

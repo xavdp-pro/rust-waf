@@ -1,0 +1,33 @@
+# Private parent directory: root:gateway-group 0750, inaccessible to PHP UID.
+# Paths are fictional; adapt and qualify every rewrite for the installation.
+server {
+    listen unix:/run/rust-waf-backend/backend.sock;
+    server_name example.test;
+    root /srv/example/wordpress;
+    index index.php;
+    server_tokens off;
+    client_max_body_size 8m;
+    access_log /var/log/nginx/waf-backend.jsonl waf_backend;
+    if ($http_x_waf_admin_friend !~ "^[01]$") { return 400; }
+    if ($http_x_request_id !~ "^[a-f0-9]{32}$") { return 400; }
+    location ~ (^|/)\. { deny all; }
+    location ~* ^/wp-content/(uploads|cache)/.*\.(php[0-9]?|phtml|phar)(/|$) { deny all; }
+    location ~* /(wp-config\.php|.*\.(sql|log|bak|ini|env))$ { deny all; }
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param HTTP_X_REQUEST_ID $http_x_request_id;
+        # Server environment, never HTTP_WAF_ADMIN_FRIEND, for an application guard.
+        fastcgi_param WAF_ADMIN_FRIEND $http_x_waf_admin_friend;
+        fastcgi_param REMOTE_ADDR $http_x_waf_client_ip;
+        fastcgi_param HTTPS on;
+        fastcgi_param SERVER_PORT 443;
+        # This example reserves HTTP Basic for outer laboratory authentication.
+        # Sites using REST Application Passwords must qualify a different scheme.
+        fastcgi_param HTTP_AUTHORIZATION "";
+        fastcgi_pass unix:/run/php/example.sock;
+        fastcgi_read_timeout 60s;
+    }
+    location / { try_files $uri $uri/ /index.php?$args; }
+}

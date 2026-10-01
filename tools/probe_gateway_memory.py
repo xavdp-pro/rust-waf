@@ -175,6 +175,7 @@ def main():
                 digest = hashlib.sha256(body).hexdigest()
                 for repetition in range(1, 4):
                     barrier = threading.Barrier(8)
+                    response_barrier = threading.Barrier(8)
                     def request(_):
                         connection = Connection(folder/'frontend.sock')
                         try:
@@ -184,6 +185,11 @@ def main():
                                 {'Content-Type': content_type, 'X-Waf-Client-IP': '198.51.100.25',
                                  'X-Waf-Admin-Friend': '0', 'Connection': 'close'})
                             response = connection.getresponse()
+                            # Hold all responses until every gateway request has
+                            # finished inspection/backend buffering. This exposes
+                            # concurrent response retention rather than allowing
+                            # a fast client to drain each response immediately.
+                            response_barrier.wait(timeout=90)
                             ids = response.headers.get_all('x-request-id', [])
                             response_hash, received = hashlib.sha256(), 0
                             while data := response.read(65536):

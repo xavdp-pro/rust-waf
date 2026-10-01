@@ -19,7 +19,7 @@ The self-test is synthetic. results.private.json names a future actual result an
 
 ## Integrated gateway statistics
 
-`waf_metrics.py` accepts `--log ORIGIN_LOG --waf-log DECISION_LOG --output REPORT_DIR`, optional repeated `--profile CONFIGURED_PROFILE` and `--engine-active` only after the deployer verifies the running service and public routing. It renders body-free decision/rule/profile/fingerprint/exception/ban counters and gateway total durations. Currently configured versions are distinguished from historical event fingerprints. Runtime activity and event availability do not independently prove protected routing.
+`waf_metrics.py` accepts `--log ORIGIN_LOG --waf-log DECISION_LOG --output REPORT_DIR`, optional repeated `--profile CONFIGURED_PROFILE` and `--engine-active` only after the deployer verifies the running service and public routing. It renders body-free decision/rule/method-policy/profile/fingerprint/exception/ban counters and gateway total durations. Currently configured versions are distinguished from historical event fingerprints. Runtime activity and event availability do not independently prove protected routing.
 
 The gateway input is capped at 64 MiB and 64 KiB per line, retaining at most 25,000 events. Origin aggregation still needs a bounded deployment-selected window for larger logs. Reports are static, read-only, with no rule/ban controls. Restrict report access to authenticated trusted administration. Decision counts are not attack labels, backend attempts are not PHP execution receipts and gateway total duration includes backend time. Independent effectiveness and matched overhead metrics remain null until acceptance evidence exists.
 

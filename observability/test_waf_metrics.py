@@ -20,6 +20,12 @@ with tempfile.TemporaryDirectory() as directory:
     event['reason']='temporary_local_ban'
     source.write_text(json.dumps(event)+'\n')
     assert summarize(source,True)['ban_denials']==1
+    event['matches']=[{'policy_id':'fictional.method-policy','profile_id':'fictional-site'}]
+    event['ban_started']=False
+    source.write_text(json.dumps(event)+'\n')
+    result=summarize(source,True)
+    assert result['policy_matches']=={'fictional.method-policy':1} and result['rule_matches']=={}
+    assert 'fictional.method-policy' in block(result)
     source.write_bytes(b'x'*65537)
     try:summarize(source)
     except ValueError:pass

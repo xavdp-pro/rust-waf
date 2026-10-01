@@ -43,6 +43,7 @@ def summarize(path, active=False):
     events, rejected = read_events(path)
     rules = collections.Counter()
     profiles = collections.Counter()
+    policies = collections.Counter()
     exceptions = collections.Counter()
     for event in events:
         for match in event['matches']:
@@ -50,6 +51,8 @@ def summarize(path, active=False):
                 continue
             if isinstance(match.get('rule_id'), str):
                 rules[match['rule_id']] += 1
+            if isinstance(match.get('policy_id'), str):
+                policies[match['policy_id']] += 1
             if isinstance(match.get('profile_id'), str):
                 profiles[match['profile_id']] += 1
             if isinstance(match.get('exception_profile'), str):
@@ -59,7 +62,7 @@ def summarize(path, active=False):
         'rejected_lines': rejected, 'decisions': dict(collections.Counter(e['decision'] for e in events)),
         'reasons': dict(collections.Counter(e.get('reason', 'unknown') for e in events)),
         'fingerprints': dict(collections.Counter(e.get('fingerprint', 'unknown') for e in events)),
-        'rule_matches': dict(rules), 'profile_matches': dict(profiles), 'exceptions': dict(exceptions),
+        'rule_matches': dict(rules), 'policy_matches': dict(policies), 'profile_matches': dict(profiles), 'exceptions': dict(exceptions),
         'ban_starts': sum(e.get('ban_started') is True for e in events),
         'ban_denials': sum(e.get('reason') == 'temporary_local_ban' for e in events),
         'backend_attempts': sum(e.get('backend_attempted') is True for e in events),
@@ -71,7 +74,7 @@ def summarize(path, active=False):
 def block(waf):
     status = 'active, with decision events' if waf['deployed'] else 'unverified or inactive'
     groups = '<h3>Currently configured profiles</h3><table><tbody>' + ''.join('<tr>'+''.join('<td>'+html.escape(str(row[key]))+'</td>' for key in ['profile_id','version','layer'])+'</tr>' for row in waf.get('configured_profiles',[])) + '</tbody></table><p>Configured versions do not retroactively identify older event fingerprints.</p>'
-    for key, label in [('decisions','Decisions'),('reasons','Reasons'),('rule_matches','Rule matches'),('profile_matches','Profile matches'),('exceptions','Exceptions'),('fingerprints','Policy fingerprints')]:
+    for key, label in [('decisions','Decisions'),('reasons','Reasons'),('rule_matches','Rule matches'),('policy_matches','Policy matches'),('profile_matches','Profile matches'),('exceptions','Exceptions'),('fingerprints','Policy fingerprints')]:
         rows = ''.join('<tr><td>'+html.escape(str(k))+'</td><td>'+str(v)+'</td></tr>' for k,v in sorted(waf[key].items()))
         groups += '<h3>'+label+'</h3><table><tbody>'+rows+'</tbody></table>'
     return '<h2>Rust gateway</h2><p>Engine: '+status+'. Retained events: '+str(waf['events'])+'. Rejected event lines: '+str(waf['rejected_lines'])+'.</p><p>Gateway total duration: median '+str(waf['gateway_total_p50_ms'])+' ms; p95 '+str(waf['gateway_total_p95_ms'])+' ms. This includes backend time.</p><p>Ban starts: '+str(waf['ban_starts'])+'; ban denials: '+str(waf['ban_denials'])+'.</p><p>'+html.escape(waf['reason'])+'</p>'+groups

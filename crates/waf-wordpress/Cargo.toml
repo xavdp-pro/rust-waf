@@ -9,6 +9,7 @@ waf-core = { path = "../waf-core" }
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+unicode-normalization.workspace = true
 bytes.workspace = true
 multer.workspace = true
 futures-util.workspace = true

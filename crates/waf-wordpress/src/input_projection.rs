@@ -3,6 +3,7 @@ use super::input_translation::{Mapping, Translation};
 use super::{Result, bad};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
+use unicode_normalization::UnicodeNormalization;
 
 pub(crate) const MAX_STAGES: usize = 16;
 const VALUE_LIMIT: usize = 8192;
@@ -27,6 +28,9 @@ pub(crate) enum Stage {
         characters: String,
     },
     BeforeQuery {},
+    UnicodeNfc {
+        unicode_version: String,
+    },
     Translate {
         mappings: Vec<Mapping>,
     },
@@ -56,6 +60,7 @@ pub(crate) enum CompiledStage {
     },
     Trim(String),
     BeforeQuery,
+    UnicodeNfc,
     Translate(Translation),
     FormEncodeSegments {
         skip: Regex,
@@ -165,6 +170,14 @@ impl Stage {
                 CompiledStage::Trim(characters.clone())
             }
             Self::BeforeQuery {} => CompiledStage::BeforeQuery,
+            Self::UnicodeNfc { unicode_version } => {
+                if unicode_version != "16.0.0"
+                    || unicode_normalization::UNICODE_VERSION != (16, 0, 0)
+                {
+                    return Err(bad("invalid_wordpress_unicode_version"));
+                }
+                CompiledStage::UnicodeNfc
+            }
             Self::Translate { mappings } => {
                 CompiledStage::Translate(Translation::compile(mappings)?)
             }
@@ -267,6 +280,14 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
             CompiledStage::BeforeQuery => value.split('?').next().unwrap().into(),
+            CompiledStage::UnicodeNfc => {
+                let mut output = String::new();
+                for character in value.nfc() {
+                    let mut encoded = [0; 4];
+                    append(&mut output, character.encode_utf8(&mut encoded))?;
+                }
+                output
+            }
             CompiledStage::Translate(table) => table.apply(&value)?,
             CompiledStage::EmptyFallback(fallback) => {
                 if value.is_empty() {
@@ -329,6 +350,64 @@ mod tests {
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
     }
+    #[test]
+    fn versioned_nfc_composes_reorders_and_preserves_compatibility_characters() {
+        let stage = json!([{"kind":"unicode_nfc","unicode_version":"16.0.0"}]);
+        assert_eq!(
+            project(
+                stage.clone(),
+                "Cafe\u{301}/a\u{315}\u{300}/\u{1100}\u{1161}/ﬀ"
+            )
+            .unwrap(),
+            "Café/à\u{315}/가/ﬀ"
+        );
+        assert_eq!(
+            project(stage.clone(), "é/猫/unchanged").unwrap(),
+            "é/猫/unchanged"
+        );
+        assert_eq!(
+            project(
+                json!([
+                    {"kind":"unicode_nfc","unicode_version":"16.0.0"},
+                    {"kind":"translate","mappings":[{"from":"é","to":"e"}]}
+                ]),
+                "Cafe\u{301}"
+            )
+            .unwrap(),
+            "Cafe"
+        );
+        for version in ["", "15.0.0", "16", "17.0.0"] {
+            assert!(
+                project(
+                    json!([{"kind":"unicode_nfc","unicode_version":version}]),
+                    "ascii"
+                )
+                .is_err()
+            );
+        }
+        assert!(serde_json::from_value::<Stage>(json!({"kind":"unicode_nfc"})).is_err());
+        assert!(
+            serde_json::from_value::<Stage>(
+                json!({"kind":"unicode_nfc","unicode_version":"16.0.0","extra":true})
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn nfc_expansion_is_bounded_before_appending_without_truncation() {
+        let stage = json!([{"kind":"unicode_nfc","unicode_version":"16.0.0"}]);
+        // U+0344 is excluded from composition and decomposes to two combining scalars.
+        assert_eq!(
+            project(stage.clone(), &"\u{344}".repeat(2048))
+                .unwrap()
+                .len(),
+            8192
+        );
+        assert!(project(stage.clone(), &"\u{344}".repeat(2049)).is_err());
+        assert!(project(stage.clone(), &"a".repeat(8193)).is_err());
+        assert!(project(stage, "a\0").is_err());
+    }
+
     #[test]
     fn translation_stages_compose_and_reject_unknown_or_invalid_contracts() {
         assert_eq!(project(json!([

@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Bounded literal translation candidate
+
+The optional `translate` projection compiles explicit mappings into a bounded byte trie and applies longest-key, one-pass replacements independently of configuration order. Duplicate/empty/NUL/oversized mappings fail startup; output expansion fails rather than truncating. The exact [contract](../crates/waf-wordpress/README.md#bounded-one-pass-literal-translation) includes table/input/output bounds. No application mappings or automatic WordPress sanitization are embedded.
+
+All 113 Rust semantic cases plus the transport wrapper and 37 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and statistics checks. An independent reference compares 4,096 exhaustive short UTF-8 strings; dimensions, eager invalid settings, longest-key collisions, nonrecursive output, deletion, stage order, expansion, original forwarding and core/denial/no-ban boundaries are covered. Independent Cursor Agent review found no concrete blocker and ran the four trie unit cases plus stage composition. Its supported-stage-list documentation suggestion was applied; a correlated expansion-error HTTP regression also passes. Application mapping/equivalence, artifact resources and deployment acceptance remain pending.
+
 ## Bounded parameter-value selection
 
 Optional `when_parameter_matches` scopes an input predicate to a declared bounded PHP 8.3 scalar/one-level-array form/query union. Ordered duplicate writes, scalar/array replacement, canonical integer keys, negative-first append and root aliases are resolved separately in each source. All retained values receive declared bounded stages and regex matching; every source/value is validated even after a match. Presence and value guards are mutually exclusive and compiled eagerly. This is not full PHP parsing, WordPress sanitization or plugin hook dispatch. See the [crate contract](../crates/waf-wordpress/README.md#optional-parameter-value-scope) for exact bounds and exclusions.

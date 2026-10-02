@@ -1,4 +1,5 @@
 //! Bounded, opt-in projections of one selected application input. Never rewrites HTTP bytes.
+use super::input_translation::{Mapping, Translation};
 use super::{Result, bad};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -26,6 +27,9 @@ pub(crate) enum Stage {
         characters: String,
     },
     BeforeQuery {},
+    Translate {
+        mappings: Vec<Mapping>,
+    },
     FormEncodeSegments {
         skip_pattern: String,
         skip_if_decoding_changes: bool,
@@ -52,6 +56,7 @@ pub(crate) enum CompiledStage {
     },
     Trim(String),
     BeforeQuery,
+    Translate(Translation),
     FormEncodeSegments {
         skip: Regex,
         skip_changed: bool,
@@ -160,6 +165,9 @@ impl Stage {
                 CompiledStage::Trim(characters.clone())
             }
             Self::BeforeQuery {} => CompiledStage::BeforeQuery,
+            Self::Translate { mappings } => {
+                CompiledStage::Translate(Translation::compile(mappings)?)
+            }
             Self::FormEncodeSegments {
                 skip_pattern,
                 skip_if_decoding_changes,
@@ -259,6 +267,7 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
             CompiledStage::BeforeQuery => value.split('?').next().unwrap().into(),
+            CompiledStage::Translate(table) => table.apply(&value)?,
             CompiledStage::EmptyFallback(fallback) => {
                 if value.is_empty() {
                     fallback.clone()
@@ -320,6 +329,22 @@ mod tests {
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
     }
+    #[test]
+    fn translation_stages_compose_and_reject_unknown_or_invalid_contracts() {
+        assert_eq!(project(json!([
+            {"kind":"translate","mappings":[{"from":"é","to":"e"},{"from":"ab","to":"x"},{"from":"a","to":"z"}]},
+            {"kind":"replace","pattern":"x","replacement":"X"}
+        ]),"éaba").unwrap(),"eXz");
+        for stage in [
+            json!({"kind":"translate","mappings":[]}),
+            json!({"kind":"translate","mappings":[{"from":"a","to":"x","extra":true}]}),
+            json!({"kind":"translate","mappings":[{"from":"a","to":"x"}],"extra":true}),
+        ] {
+            let parsed = serde_json::from_value::<Stage>(stage);
+            assert!(parsed.is_err() || parsed.unwrap().compile().is_err());
+        }
+    }
+
     #[test]
     fn replace_skip_is_current_stage_local_and_preserves_later_transforms() {
         let stages = json!([

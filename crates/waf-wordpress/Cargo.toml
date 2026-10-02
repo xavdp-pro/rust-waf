@@ -19,4 +19,5 @@ bytes.workspace = true
 multer.workspace = true
 futures-util.workspace = true
 [dev-dependencies]
+sha2.workspace = true
 tokio.workspace = true

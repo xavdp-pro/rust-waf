@@ -117,6 +117,41 @@ fn push(output: &mut String, scalar: char) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "Diagnostic collection: run explicitly and compare with an independent native oracle"]
+    fn collect_exhaustive_admitted_scalar_lowercase_fingerprints() {
+        use sha2::{Digest, Sha256};
+        for version in ["15.0.0", "16.0.0"] {
+            let table = Lowercase::compile(version).unwrap();
+            let mut stream = Sha256::new();
+            let mut admitted = 0_u32;
+            let mut changed = 0_u32;
+            for point in 1..=0x10ffff_u32 {
+                let Some(scalar) = char::from_u32(point) else {
+                    continue;
+                };
+                let mut buffer = [0; 4];
+                let input: &str = scalar.encode_utf8(&mut buffer);
+                let output = table.apply(input).unwrap();
+                admitted += 1;
+                changed += u32::from(output != input);
+                stream.update(point.to_be_bytes());
+                stream.update((output.len() as u32).to_be_bytes());
+                stream.update(output.as_bytes());
+            }
+            assert_eq!(admitted, 1_112_063);
+            println!(
+                "LOWERCASE_SCALAR_FINGERPRINT {}",
+                serde_json::json!({
+                    "unicode_version": version, "admitted_scalars": admitted,
+                    "nul_excluded": 1, "surrogates_excluded": 2048,
+                    "changed_scalars": changed,
+                    "result_stream_sha256": stream.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                    "scope": "Collection only: independent native comparison required; no contextual string or HTTP acceptance"
+                })
+            );
+        }
+    }
+    #[test]
     fn lowercase_is_default_casing_with_contextual_sigma_not_case_folding() {
         let table = Lowercase::compile("16.0.0").unwrap();
         for (input, expected) in [

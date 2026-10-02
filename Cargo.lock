@@ -784,6 +784,7 @@ dependencies = [
  "regex-syntax 0.8.11",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "unicode-case-mapping 0.5.0",
  "unicode-case-mapping 1.0.0",

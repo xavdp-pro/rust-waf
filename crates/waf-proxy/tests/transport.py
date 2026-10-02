@@ -216,6 +216,10 @@ class Transport(unittest.TestCase):
                     constraint.update(path='/',path_match='prefix',actions=[],sources=[{'kind':'request_target'}],
                         when_parameter_matches={'name':'command_name','binding':'php83_form_query_union',
                             'pattern':'(?i)^apply_changes$','stages':[{'kind':'trim','characters':' '}]})
+                if input_constraint == 'ordered':
+                    constraint=site['modules'][0]['settings']['input_constraints'][0]
+                    constraint.update(sources=[{'kind':'request_parameter','name':'return_url'}],projection='raw',
+                        stages=[{'kind':'ordered_replace','mappings':[{'from':'XY','to':''},{'from':'AB','to':''},{'from':'Q','to':'QQ'},{'from':'QQ','to':''}]}],reject_pattern=r'^marker$')
                 if input_constraint == 'tags':
                     constraint=site['modules'][0]['settings']['input_constraints'][0]
                     constraint.update(sources=[{'kind':'request_parameter','name':'return_url'}],projection='raw',
@@ -905,6 +909,28 @@ class Transport(unittest.TestCase):
                     else:
                         self.assertFalse(event['backend_attempted'])
                         self.assertEqual(event['reason'],'rule_match' if extra else 'wordpress_input_constraint')
+
+    def test_42_ordered_replacement_cascades_keep_transport_core_and_intermediate_limits(self):
+        with self.alternate_proxy('ordered',input_constraint='ordered') as (path,events):
+            for media in ['form','multipart']:
+                for value,extra,expected in [('AXYBmarker','',403),('AXBmarker','',200),('safe','forbidden-sentinel',403),('Q'*4097,'',400)]:
+                    if media == 'form':
+                        payload=('action=fictional_draft&return_url='+urllib.parse.quote(value)+'&other='+extra).encode()
+                        content_type='application/x-www-form-urlencoded'
+                    else:
+                        payload=(''.join('--ordered\r\nContent-Disposition: form-data; name="'+name+'"\r\n\r\n'+item+'\r\n' for name,item in [('action','fictional_draft'),('return_url',value),('other',extra)])+'--ordered--\r\n').encode()
+                        content_type='multipart/form-data; boundary=ordered'
+                    before=len(self.received)
+                    status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers={'Content-Type':content_type},socket_path=path)
+                    self.assertEqual(status,expected);self.assertEqual(len(self.received),before+(expected==200))
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertFalse(event['ban_started'])
+                    if expected==200:
+                        self.assertEqual(body,payload);self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                        self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                    else:
+                        self.assertFalse(event['backend_attempted'])
+                        self.assertEqual(event['reason'],'wordpress_projection_value_limit' if expected==400 else 'rule_match' if extra else 'wordpress_input_constraint')
 
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):

@@ -128,6 +128,7 @@ Supported explicit stages:
 - `uri_encode`: preserve ASCII and emit lowercase UTF-8 percent escapes for non-ASCII scalars, stopping before a whole scalar would exceed explicit `max_output_bytes` (1–8192). See the bounded URI contract below.
 - `unicode_lowercase`: explicit Unicode 15.0.0/16.0.0 default casing with contextual final sigma and bounded expansion; see the lowercase contract below.
 - `unicode_nfc`: explicit Unicode 16.0.0 canonical composition with bounded input/output; see the version contract below.
+- `ordered_replace`: explicit sequential literal passes with bounded intermediate values; see the ordered replacement contract below.
 - `translate`: longest-key, one-pass literal mappings with no replacement rescanning; see the exact table/UTF-8/value bounds below.
 - `trim`: remove the declared `characters` from both ends. The nonempty character set is at most 64 UTF-8 bytes.
 - `before_query`: take the literal prefix before the first `?` at this point in the pipeline.
@@ -229,3 +230,9 @@ cargo test -p waf-wordpress collect_short_tag_projection_fingerprint --locked --
 ```
 
 The diagnostic enumerates widths 0–4 in radix 13, least-significant symbol first, alphabet `a < > ! ? - ' " \ ( ) space é`; each input has prefix empty/`x`, then suffix empty/`z`, in that order. Hash framing is big-endian u32 input-byte length, input bytes, big-endian u32 result-byte length, result bytes. This finite corpus cannot establish all PHP contexts or full WordPress normalization.
+
+## Ordered literal replacement
+
+`{"kind":"ordered_replace","mappings":[{"from":"XY","to":""},{"from":"AB","to":""}]}` performs one global non-overlapping replacement pass for each pair, in the declared order. A later pair sees the preceding result: `AXYB` projects to empty here, whereas reversed pairs yield `AB`. A pair never rescans its own replacement; `a` → `aa` expands once per declared pair. Duplicate keys are allowed as intentional additional passes. This differs from `translate`, which chooses the longest key on the original input without rescanning replacements or applying table order.
+
+One stage accepts 1–128 pairs; each key has 1–16 UTF-8 bytes and each replacement 0–16, with no NUL. Missing/unknown settings and malformed tables fail startup. The table owns at most 4096 bytes of key/replacement contents. All inputs and every intermediate pass output retain the 8192-byte bound, checked before each append; a later shrinking pass cannot excuse an earlier excess. Valid UTF-8 spans remain intact. Work is bounded by the declared pairs and admitted input per pass; no unbounded fixed point is attempted. It remains one stage under the existing sixteen-stage limit and does not rewrite HTTP bytes. Site/application tables remain external. Exact artifact resource qualification remains required.

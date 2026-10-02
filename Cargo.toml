@@ -14,7 +14,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 regex = "1"
+regex-syntax = "=0.8.11"
 unicode-normalization = "=0.1.24"
+unicode-case-mapping = "=1.0.0"
+unicode-case-mapping15 = { package = "unicode-case-mapping", version = "=0.5.0" }
+regex-syntax15 = { package = "regex-syntax", version = "=0.7.5" }
 
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time", "signal", "sync"] }

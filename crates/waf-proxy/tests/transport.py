@@ -200,6 +200,9 @@ class Transport(unittest.TestCase):
                     'methods':['GET','POST'],'request_order':'GP','arg_separator':'&','max_input_vars':1000,
                     'sources':[{'kind':'request_parameter','name':'return_url'},{'kind':'header','name':'Referer'},{'kind':'request_target'}],
                     'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
+                if input_constraint in ['prefix-presence','root-presence']:
+                    constraint=site['modules'][0]['settings']['input_constraints'][0]
+                    constraint.update(path='/' if input_constraint == 'root-presence' else '/articles',path_match='prefix',when_parameter_present='command_name',actions=[],sources=[{'kind':'request_target'}])
                 if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
                 if input_constraint == 'preserved-prefix':
@@ -400,7 +403,7 @@ class Transport(unittest.TestCase):
             before=len(self.received)
             for case in [{'method':'POST','path':'/'},{'method':'GET','path':'/forward'},
                          {'method':'GET','path':'/','headers':{'X-Waf-Client-IP':'invalid'}},
-                         {'method':'GET','path':'/','body':b'declared-body'}]:
+                         {'method':'GET','path':'/','headers':{'Content-Length':'13'}}]:
                 values={'method':'GET','path':'/','body':b'','socket_path':gate};values.update(case)
                 self.assertEqual(self.request(**values)[0],400)
             self.assertEqual(len(self.received),before)
@@ -658,6 +661,63 @@ class Transport(unittest.TestCase):
                 before=len(self.received)
                 status,_,_=self.request(method=method,path=route,body=body(base),socket_path=path,headers={'Content-Type':mime,**extra})
                 self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
+
+    def test_35_prefix_presence_scope_preserves_bytes_and_does_not_resolve_plugin_actions(self):
+        with self.alternate_proxy('prefix-presence',input_constraint='prefix-presence') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for route,payload,extra in [
+                ('/articles/safe',b'command_name[]=a&command_name[]=b',form),
+                ('/articles/FORBIDDEN',b'other=x',form),
+                ('/articles-other/FORBIDDEN',b'command_name=x',form),
+                ('/articles/FORBIDDEN',b'{"command_name":"x"}',{'Content-Type':'application/json'}),
+                ('/articles/safe?search=FORBIDDEN',b'command_name=0',form),
+            ]:
+                before=len(self.received)
+                status,headers,body=self.request(path=route,body=payload,headers=extra,socket_path=path)
+                self.assertEqual(status,200);self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+            for route,payload in [
+                ('/articles/FORBIDDEN',b'command_name='),
+                ('/articles/child/FORBIDDEN',b'command_name=0'),
+                ('/articles/FORBIDDEN',b'command.name=x'),
+                ('/articles/FORBIDDEN',b'command_name[]=a&command_name[]=b'),
+                ('/articles/FORBIDDEN',b'command_name=a&command_name=b'),
+                ('/articles/FORBIDDEN?command_name=',b'other=x'),
+                ('/articles/FORBIDDEN',b'command_name%00suffix=x'),
+            ]:
+                before=len(self.received)
+                status,headers,_=self.request(path=route,body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertEqual(event['reason'],'wordpress_input_constraint');self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+                self.assertNotIn('FORBIDDEN',json.dumps(event))
+            for filename,expected in [(None,403),('upload.txt',200)]:
+                suffix='; filename="'+filename+'"' if filename else ''
+                payload=('--presence-boundary\r\nContent-Disposition: form-data; name="command_name[]"'+suffix+'\r\n\r\na\r\n--presence-boundary--\r\n').encode()
+                before=len(self.received)
+                status,headers,body=self.request(path='/articles/FORBIDDEN',body=payload,headers={'Content-Type':'multipart/form-data; boundary=presence-boundary'},socket_path=path)
+                self.assertEqual(status,expected);self.assertEqual(len(self.received),before+(expected==200))
+                if expected==200: self.assertEqual(body,payload)
+                else:
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+            before=len(self.received)
+            malformed=b'--presence-boundary\r\nContent-Disposition: form-data; name="command_name"\r\n\r\nx\r\n--presence-boundary--\r\n'
+            status,headers,_=self.request(path='/articles/FORBIDDEN',body=malformed,headers={'Content-Type':'multipart/form-data; boundary=presence-boundary; charset=utf-8'},socket_path=path)
+            self.assertEqual(status,400);self.assertEqual(len(self.received),before)
+            event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+            self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+            before=len(self.received)
+            status,_,_=self.request(path='/articles/safe',body=b'other=forbidden-sentinel',headers=form,socket_path=path)
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+
+        with self.alternate_proxy('root-presence',input_constraint='root-presence') as (path,events):
+            before=len(self.received)
+            status,headers,_=self.request(path='/outside/FORBIDDEN',body=b'command_name=0',headers=form,socket_path=path)
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+            event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+            self.assertEqual(event['reason'],'wordpress_input_constraint');self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
 
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):

@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Conditional input scopes across canonical path prefixes
+
+Optional `path_match: prefix` matches a canonical path itself and descendants at slash boundaries, confined to the installation base with no standard action selector. Omission preserves exact matching. Optional `when_parameter_present` activates the declared input predicate on the union of query/form POST parameter-root presence, including falsey, duplicate, bracket-prefix and normalized aliases. Uploaded files and JSON/non-POST bodies do not populate form POST. This conservative syntactic trigger does not resolve plugin action values or emulate all PHP array semantics; site authors must qualify their own dispatch. Scalar source ambiguity/value limits and complete core inspection/forwarded bytes remain independent.
+
+All 99 Rust semantic cases and 35 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Root/installation boundaries, defaults, form/query union, aliases/arrays/duplicates, both form media, files/JSON, malformed metadata, original hashes/correlation and denial non-forwarding/no-ban behavior are covered. A pre-existing read-only ban-gate body-send race was corrected to declare a nonzero body length without sending a payload; the required early 400, no forwarding/mutation and valid empty 204 remain asserted. Initial failed compilation/unit and full-suite attempts are not passes. Independent Cursor review found no concrete blocker; a follow-up review also finds no blocker in the added regressions. Its explicit PATCH case suggestion was applied and the focused scope tests pass. Actual private policy, PHP/application equivalence, resource measurement, installation and full acceptance remain pending.
+
 ## Bounded preserved replacement prefix
 
 Optional `replace.preserve_prefix_pattern` preserves the first regex match only when it starts at byte zero, then applies replacement to the remaining suffix with suffix-relative anchors/captures. The complete prefix counts toward the unchanged output bound and remains visible to later stages and the predicate. Full-input skip conditions run first; eager bounded compilation, UTF-8/value/NUL guards, complete core inspection and original HTTP bytes remain unchanged.

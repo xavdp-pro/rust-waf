@@ -575,7 +575,7 @@ impl Wordpress {
         };
         let mut input_denial = None;
         for (rule, pattern) in self.site.input_constraints.iter().zip(&self.input_patterns) {
-            if rule.path == path
+            if rule.matches_path(&path)
                 && rule.methods.iter().any(|method| method == wire_method)
                 && (rule.actions.is_empty()
                     || action.as_ref().is_some_and(|a| rule.actions.contains(a)))

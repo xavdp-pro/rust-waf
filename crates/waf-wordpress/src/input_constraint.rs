@@ -29,11 +29,22 @@ pub(crate) enum Projection {
     Raw,
     BeforeQuery,
 }
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PathMatch {
+    #[default]
+    Exact,
+    Prefix,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InputConstraint {
     pub(crate) id: String,
     pub(crate) path: String,
+    #[serde(default)]
+    path_match: PathMatch,
+    #[serde(default)]
+    when_parameter_present: Option<String>,
     pub(crate) actions: Vec<String>,
     pub(crate) methods: Vec<String>,
     request_order: String,
@@ -61,6 +72,18 @@ impl Source {
     }
 }
 impl InputConstraint {
+    pub(crate) fn matches_path(&self, path: &str) -> bool {
+        match self.path_match {
+            PathMatch::Exact => path == self.path,
+            PathMatch::Prefix => {
+                self.path == "/"
+                    || path == self.path
+                    || path
+                        .strip_prefix(&self.path)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }
+        }
+    }
     pub(crate) fn compile(
         &self,
         base_path: &str,
@@ -80,6 +103,15 @@ impl InputConstraint {
                 .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
         if !policy_id
             || !ids.insert(self.id.clone())
+            || self
+                .when_parameter_present
+                .as_ref()
+                .is_some_and(|v| !ident(v))
+            || (matches!(self.path_match, PathMatch::Prefix)
+                && ((base_path != "/"
+                    && self.path != base_path.trim_end_matches('/')
+                    && !self.path.starts_with(base_path))
+                    || !self.actions.is_empty()))
             || self.path.len() > 512
             || clean_path(&self.path)? != self.path
             || (!self.actions.is_empty()
@@ -155,12 +187,25 @@ impl InputConstraint {
         compiled: &CompiledInput,
         request: &super::Request<'_>,
     ) -> Result<bool> {
+        if let Some(name) = &self.when_parameter_present {
+            // Presence is a union of form POST and query bindings, including arrays,
+            // duplicates and falsey values. It does not resolve a plugin action value.
+            let query = query_parameter(request.query, name, self.max_input_vars, true)?;
+            let post = if request.wire_method == "POST" {
+                post_parameter(request, name, self.max_input_vars, true).await?
+            } else {
+                None
+            };
+            if query.is_none() && post.is_none() {
+                return Ok(false);
+            }
+        }
         let mut selected = None;
         for (index, source) in self.sources.iter().enumerate() {
             let value = match source {
                 Source::RequestParameter { name, .. } => {
                     let post = if request.wire_method == "POST" {
-                        scalar_post(request, name, self.max_input_vars).await?
+                        post_parameter(request, name, self.max_input_vars, false).await?
                     } else {
                         None
                     };
@@ -168,7 +213,7 @@ impl InputConstraint {
                     if post.is_some() {
                         post
                     } else {
-                        scalar_query(request.query, name, self.max_input_vars)?
+                        query_parameter(request.query, name, self.max_input_vars, false)?
                     }
                 }
                 Source::Header { name, .. } => {
@@ -216,9 +261,14 @@ fn binding(
     value: &str,
     name: &str,
     encoded: bool,
+    presence_only: bool,
 ) -> Result<()> {
     let key = normalized_key(raw_key);
     if key.split('[').next() != Some(name) {
+        return Ok(());
+    }
+    if presence_only {
+        *output = Some(String::new());
         return Ok(());
     }
     if key != name || raw_key.contains('\0') || output.is_some() {
@@ -245,21 +295,34 @@ fn binding(
     *output = Some(value);
     Ok(())
 }
-fn scalar_query(input: &str, name: &str, max_vars: usize) -> Result<Option<String>> {
+fn query_parameter(
+    input: &str,
+    name: &str,
+    max_vars: usize,
+    presence_only: bool,
+) -> Result<Option<String>> {
     let mut output = None;
     for (count, pair) in input.split('&').enumerate() {
         if count >= max_vars {
             return Err(bad("wordpress_input_variable_limit"));
         }
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        binding(&mut output, &decode(key, true)?, value, name, true)?;
+        binding(
+            &mut output,
+            &decode(key, true)?,
+            value,
+            name,
+            true,
+            presence_only,
+        )?;
     }
     Ok(output)
 }
-async fn scalar_post(
+async fn post_parameter(
     request: &super::Request<'_>,
     name: &str,
     max_vars: usize,
+    presence_only: bool,
 ) -> Result<Option<String>> {
     let media = request
         .content_type
@@ -286,9 +349,15 @@ async fn scalar_post(
                 binding(
                     &mut output,
                     &key,
-                    std::str::from_utf8(value).map_err(|_| bad("wordpress_invalid_input_value"))?,
+                    if presence_only {
+                        ""
+                    } else {
+                        std::str::from_utf8(value)
+                            .map_err(|_| bad("wordpress_invalid_input_value"))?
+                    },
                     name,
                     true,
+                    presence_only,
                 )?;
             }
         }
@@ -317,10 +386,15 @@ async fn scalar_post(
                 binding(
                     &mut output,
                     part.name,
-                    std::str::from_utf8(&request.body[part.value.clone()])
-                        .map_err(|_| bad("wordpress_invalid_input_value"))?,
+                    if presence_only {
+                        ""
+                    } else {
+                        std::str::from_utf8(&request.body[part.value.clone()])
+                            .map_err(|_| bad("wordpress_invalid_input_value"))?
+                    },
                     name,
                     false,
+                    presence_only,
                 )?;
             }
         }
@@ -339,10 +413,10 @@ mod binding_size_tests {
             ("%C3%A9".repeat(4096), "é".repeat(4096)),
         ] {
             let mut output = None;
-            binding(&mut output, "selected", &wire, "selected", true).unwrap();
+            binding(&mut output, "selected", &wire, "selected", true, false).unwrap();
             assert_eq!(output.as_deref(), Some(expected.as_str()));
             let mut mime = None;
-            binding(&mut mime, "selected", &expected, "selected", false).unwrap();
+            binding(&mut mime, "selected", &expected, "selected", false, false).unwrap();
             assert_eq!(mime, output);
         }
     }
@@ -356,7 +430,7 @@ mod binding_size_tests {
             "%ZZ".into(),
         ] {
             let mut output = None;
-            assert!(binding(&mut output, "selected", &wire, "selected", true).is_err());
+            assert!(binding(&mut output, "selected", &wire, "selected", true, false).is_err());
             assert!(output.is_none());
         }
         let mut output = None;
@@ -366,9 +440,141 @@ mod binding_size_tests {
                 "selected",
                 &"A".repeat(8193),
                 "selected",
+                false,
                 false
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    fn rule() -> InputConstraint {
+        serde_json::from_value(serde_json::json!({
+            "id":"example.target", "path":"/app/articles", "path_match":"prefix",
+            "when_parameter_present":"command_name", "actions":[], "methods":["GET","POST"],
+            "request_order":"GP", "arg_separator":"&", "max_input_vars":4,
+            "sources":[{"kind":"request_target"}], "projection":"before_query",
+            "reject_pattern":"FORBIDDEN", "evidence":"fictional-consumer"
+        }))
+        .unwrap()
+    }
+    #[test]
+    fn explicit_prefix_requires_segment_boundary_installation_and_no_actions() {
+        let mut r = rule();
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_ok());
+        assert!(r.matches_path("/app/articles/child/"));
+        assert!(!r.matches_path("/app/articles-other/"));
+        r.path = "/".into();
+        assert!(r.compile("/", &mut BTreeSet::new()).is_ok());
+        assert!(r.matches_path("/outside/child"));
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+        r.path = "/app".into();
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_ok());
+        assert!(r.matches_path("/app"));
+        assert!(!r.matches_path("/application"));
+        for path in ["/app/articles/", "/other/", "/app/../other/"] {
+            r.path = path.into();
+            assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+        }
+        r = rule();
+        r.actions.push("example".into());
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+        r = rule();
+        r.when_parameter_present = Some("bad[field]".into());
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+        r = rule();
+        r.path_match = PathMatch::Exact;
+        assert!(!r.matches_path("/app/articles/child/"));
+    }
+    #[test]
+    fn presence_includes_falsey_duplicate_array_and_php_alias_bindings() {
+        for input in [
+            "command_name=",
+            "command_name=0",
+            "command.name=x",
+            "command+name[]=a",
+            "+command.name[]=a",
+            "command_name[x]=a",
+            "command_name=a&command_name=b",
+            "command_name%00suffix=x",
+        ] {
+            assert!(
+                query_parameter(input, "command_name", 4, true)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(
+            query_parameter("other=command_name", "command_name", 4, true)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            query_parameter(
+                "other=a&other=b&other=c&other=d&command_name=x",
+                "command_name",
+                4,
+                true
+            )
+            .is_err()
+        );
+        assert!(query_parameter("%ZZ=x", "command_name", 4, true).is_err());
+    }
+    #[tokio::test]
+    async fn presence_is_post_query_union_not_scalar_fallback_or_json_dispatch() {
+        let r = rule();
+        let compiled = r.compile("/app/", &mut BTreeSet::new()).unwrap();
+        for (method, query, content_type, body, expected) in [
+            (
+                "POST",
+                "",
+                "application/x-www-form-urlencoded",
+                "command_name[]=x&command_name[]=y",
+                true,
+            ),
+            (
+                "POST",
+                "command_name=x",
+                "application/x-www-form-urlencoded",
+                "command_name=0",
+                true,
+            ),
+            (
+                "POST",
+                "",
+                "application/json",
+                "{\"command_name\":\"x\"}",
+                false,
+            ),
+            (
+                "PATCH",
+                "",
+                "application/x-www-form-urlencoded",
+                "command_name=x",
+                false,
+            ),
+            (
+                "PUT",
+                "",
+                "application/x-www-form-urlencoded",
+                "command_name=x",
+                false,
+            ),
+            ("GET", "command_name=0", "", "", true),
+        ] {
+            let request = super::super::Request {
+                path: "/app/articles/FORBIDDEN",
+                query,
+                wire_method: method,
+                headers: &[],
+                content_type,
+                body: bytes::Bytes::from(body),
+                max_parts: 8,
+            };
+            assert_eq!(r.rejects(&compiled, &request).await.unwrap(), expected);
+        }
     }
 }

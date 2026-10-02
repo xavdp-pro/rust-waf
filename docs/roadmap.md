@@ -1,5 +1,11 @@
 # Public roadmap
 
+## Conditional sequence removal
+
+The optional `remove_sequences.skip_pattern` is compiled with the existing bounded regex limits and matches the current complete stage input once. A match skips only deletion; later projections, the selected-input predicate, full core inspection, original HTTP forwarding and value/privacy limits remain active. Omitted/null settings preserve unconditional deletion. Invalid patterns and ambiguous sequence sets fail startup.
+
+All 90 Rust semantic cases and 31 correlated neutral HTTP groups pass with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the delta and ran the five sequence unit cases with no merge blocker. After review, HTTP reason/sibling-core assertions were added and two pre-existing early-ban fixtures were changed to empty bodies to avoid racing the deliberate connection close; the transport suite then passed. Actual application equivalence, artifact resources, deployment and full acceptance remain pending. This generic option enables declared conditional transforms, not an implicit sanitizer or bypass.
+
 ## Recursive literal sequence removal
 
 The optional `remove_sequences` projection reaches the full deletion fixed point using a bounded streaming UTF-8 stack. Startup restricts the literal set to equal-width, nonoverlapping words; empty, duplicate, oversized and ambiguous sets are rejected. Nested inputs through the full 8 KiB value bound are supported without a recursion-depth cutoff. Values and original HTTP bytes remain private/unchanged; no ban confidence is inferred. All 88 Rust semantic cases and 30 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the mechanism and ran the sequence tests with no blocker identified. Actual application equivalence, private policy, artifact resources, deployment and final acceptance remain pending.

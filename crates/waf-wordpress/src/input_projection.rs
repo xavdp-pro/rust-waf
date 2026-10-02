@@ -15,6 +15,8 @@ pub(crate) enum Stage {
     },
     RemoveSequences {
         sequences: Vec<String>,
+        #[serde(default)]
+        skip_pattern: Option<String>,
     },
     Trim {
         characters: String,
@@ -38,7 +40,10 @@ pub(crate) enum CompiledStage {
         pattern: Regex,
         tokens: Vec<Token>,
     },
-    RemoveSequences(Vec<String>),
+    RemoveSequences {
+        sequences: Vec<String>,
+        skip: Option<Regex>,
+    },
     Trim(String),
     BeforeQuery,
     FormEncodeSegments {
@@ -101,7 +106,10 @@ impl Stage {
                 }
                 CompiledStage::Replace { pattern, tokens }
             }
-            Self::RemoveSequences { sequences } => {
+            Self::RemoveSequences {
+                sequences,
+                skip_pattern,
+            } => {
                 // Equal-length words without prefix/suffix overlaps have a unique deletion
                 // fixed point. Streaming removal therefore agrees with repeated global deletion.
                 let width = sequences.first().map_or(0, |s| s.len());
@@ -124,7 +132,10 @@ impl Stage {
                         }
                     }
                 }
-                CompiledStage::RemoveSequences(sequences.clone())
+                CompiledStage::RemoveSequences {
+                    sequences: sequences.clone(),
+                    skip: skip_pattern.as_deref().map(pattern).transpose()?,
+                }
             }
             Self::Trim { characters } => {
                 if characters.is_empty() || characters.len() > 64 || characters.contains('\0') {
@@ -193,16 +204,26 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                 append(&mut out, &value[end..])?;
                 out
             }
-            CompiledStage::RemoveSequences(sequences) => {
-                let mut out = String::with_capacity(value.len());
-                for character in value.chars() {
-                    out.push(character);
-                    while let Some(sequence) = sequences.iter().find(|s| out.ends_with(s.as_str()))
-                    {
-                        out.truncate(out.len() - sequence.len());
+            CompiledStage::RemoveSequences { sequences, skip } => {
+                // A match skips this projection stage only. Selection, later stages,
+                // the constraint predicate and complete request inspection still apply.
+                if skip
+                    .as_ref()
+                    .is_some_and(|pattern| pattern.is_match(&value))
+                {
+                    value
+                } else {
+                    let mut out = String::with_capacity(value.len());
+                    for character in value.chars() {
+                        out.push(character);
+                        while let Some(sequence) =
+                            sequences.iter().find(|s| out.ends_with(s.as_str()))
+                        {
+                            out.truncate(out.len() - sequence.len());
+                        }
                     }
+                    out
                 }
-                out
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
             CompiledStage::BeforeQuery => value.split('?').next().unwrap().into(),
@@ -444,6 +465,45 @@ mod sequence_tests {
             apply(&[compile(&["αβ"]).unwrap()], "ααββé".into()).unwrap(),
             "é"
         );
+    }
+    #[test]
+    fn skip_pattern_preserves_stage_input_but_not_later_stages_or_value_bounds() {
+        let stage: Stage = serde_json::from_value(json!({"kind":"remove_sequences",
+            "sequences":["XY"],"skip_pattern":"(?i)^keep:"}))
+        .unwrap();
+        let stages = [
+            stage.compile().unwrap(),
+            Stage::BeforeQuery {}.compile().unwrap(),
+        ];
+        assert_eq!(
+            apply(&stages, "KEEP:XXYY?discard".into()).unwrap(),
+            "KEEP:XXYY"
+        );
+        assert_eq!(
+            apply(&stages, "other:XXYY?discard".into()).unwrap(),
+            "other:"
+        );
+        assert!(apply(&stages, format!("keep:{}", "X".repeat(8192))).is_err());
+        assert!(apply(&stages, "keep:\0".into()).is_err());
+    }
+    #[test]
+    fn invalid_skip_patterns_fail_startup_even_when_sequences_are_valid() {
+        for source in [
+            String::new(),
+            "[".into(),
+            "x".repeat(2049),
+            "a{100000}".into(),
+        ] {
+            let stage: Stage = serde_json::from_value(json!({"kind":"remove_sequences",
+                "sequences":["XY"],"skip_pattern":source}))
+            .unwrap();
+            assert!(stage.compile().is_err());
+        }
+        // A never-matching condition must not bypass sequence-set validation.
+        let stage: Stage = serde_json::from_value(json!({"kind":"remove_sequences",
+            "sequences":["AA"],"skip_pattern":"never"}))
+        .unwrap();
+        assert!(stage.compile().is_err());
     }
     #[test]
     fn empty_duplicate_variable_width_and_overlapping_sequence_sets_fail_startup() {

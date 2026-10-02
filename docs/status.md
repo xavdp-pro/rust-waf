@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Bounded URI scalar projection
+
+The opt-in `uri_encode` stage retains ASCII and emits lowercase percent escapes for non-ASCII UTF-8 scalars. Required `max_output_bytes` is 1–8192; it stops before an entire representation exceeds that budget. Input/NUL validation, later stages/predicate, complete original request inspection and byte-exact forwarding remain active. This is an explicit application transform, not an implicit sanitizer. See the [contract](../crates/waf-wordpress/README.md#bounded-uri-scalar-encoding).
+
+Local validation passes 118 Rust semantic cases plus the transport wrapper, 39 correlated neutral HTTP groups, clippy/formatting, foundation/scorer and statistics checks. Three unit cases cover boundaries/eager contracts/composition and 13,650 independent mixed-string comparisons. HTTP checks cover both form media, projected rejection with no backend/ban, original forwarding and a sibling core detection. The initial full HTTP rerun exposed an early-close BrokenPipe race in the client fixture; the fixture now still requires a complete response and all correlated assertions after that send error, and always closes its connection. It never assumes a denial from the error. Independent Cursor Agent review found no concrete blocker and independently ran all three URI unit tests. Native application equivalence, exact artifact resources and deployment/full acceptance remain unqualified.
+
 ## Versioned canonical Unicode composition
 
 The optional `unicode_nfc` stage requires explicit `unicode_version: 16.0.0`, pins `unicode-normalization` 0.1.24 and checks its table version at startup. It performs canonical composition only, with existing UTF-8/NUL/input bounds and streamed output expansion errors. No automatic accent removal, compatibility normalization, case folding or WordPress filter behavior is inferred. See the [exact contract](../crates/waf-wordpress/README.md#explicit-unicode-nfc-version).

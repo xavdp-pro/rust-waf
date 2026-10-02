@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 
 BINARY = sys.argv.pop(1)
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -103,11 +104,18 @@ class Transport(unittest.TestCase):
         values = {'X-Waf-Client-IP':'198.51.100.25','X-Waf-Admin-Friend':'0','Content-Type':'text/plain'}
         if headers:
             values.update(headers)
-        connection.request(method,path,body,values)
-        response=connection.getresponse()
-        result=(response.status,dict(response.getheaders()),response.read())
-        connection.close()
-        return result
+        try:
+            try:
+                connection.request(method,path,body,values)
+            except BrokenPipeError:
+                # An early header refusal may close while sendall writes a body.
+                # Still require a complete HTTP response and normal assertions;
+                # absence of a response remains an error, never an assumed denial.
+                pass
+            response=connection.getresponse()
+            return (response.status,dict(response.getheaders()),response.read())
+        finally:
+            connection.close()
     def assert_denied_before_backend(self, **kwargs):
         before=len(self.received)
         status,headers,_=self.request(**kwargs)
@@ -208,6 +216,10 @@ class Transport(unittest.TestCase):
                     constraint.update(path='/',path_match='prefix',actions=[],sources=[{'kind':'request_target'}],
                         when_parameter_matches={'name':'command_name','binding':'php83_form_query_union',
                             'pattern':'(?i)^apply_changes$','stages':[{'kind':'trim','characters':' '}]})
+                if input_constraint == 'uri':
+                    constraint=site['modules'][0]['settings']['input_constraints'][0]
+                    constraint.update(sources=[{'kind':'request_parameter','name':'return_url'}],projection='raw',
+                        stages=[{'kind':'uri_encode','max_output_bytes':9}],reject_pattern=r'^%e7%8c%ab$')
                 if input_constraint == 'nfc':
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'unicode_nfc','unicode_version':'16.0.0'},{'kind':'translate','mappings':[{'from':'é','to':'FORBIDDEN'}]}]
                 if input_constraint == 'translate':
@@ -819,6 +831,28 @@ class Transport(unittest.TestCase):
                 else:
                     self.assertFalse(event['backend_attempted'])
                     self.assertEqual(event['reason'],'wordpress_projection_value_limit' if expected==400 else 'rule_match' if b'forbidden-sentinel' in payload else 'wordpress_input_constraint')
+
+    def test_39_uri_projection_truncates_only_the_predicate_and_preserves_core_inspection(self):
+        with self.alternate_proxy('uri',input_constraint='uri') as (path,events):
+            for media in ['form','multipart']:
+                for value,extra,expected in [('猫-tail','',403),('é-tail','',200),('safe','forbidden-sentinel',403)]:
+                    if media == 'form':
+                        payload=('action=fictional_draft&return_url='+urllib.parse.quote(value)+'&other='+extra).encode()
+                        content_type='application/x-www-form-urlencoded'
+                    else:
+                        payload=(''.join('--uri-boundary\r\nContent-Disposition: form-data; name="'+name+'"\r\n\r\n'+item+'\r\n' for name,item in [('action','fictional_draft'),('return_url',value),('other',extra)])+'--uri-boundary--\r\n').encode()
+                        content_type='multipart/form-data; boundary=uri-boundary'
+                    before=len(self.received)
+                    status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers={'Content-Type':content_type},socket_path=path)
+                    self.assertEqual(status,expected);self.assertEqual(len(self.received),before+(expected==200))
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertFalse(event['ban_started'])
+                    if expected==200:
+                        self.assertEqual(body,payload);self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                        self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                    else:
+                        self.assertFalse(event['backend_attempted'])
+                        self.assertEqual(event['reason'],'rule_match' if extra else 'wordpress_input_constraint')
 
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):

@@ -28,6 +28,9 @@ pub(crate) enum Stage {
         characters: String,
     },
     BeforeQuery {},
+    UriEncode {
+        max_output_bytes: usize,
+    },
     UnicodeNfc {
         unicode_version: String,
     },
@@ -60,6 +63,7 @@ pub(crate) enum CompiledStage {
     },
     Trim(String),
     BeforeQuery,
+    UriEncode(usize),
     UnicodeNfc,
     Translate(Translation),
     FormEncodeSegments {
@@ -170,6 +174,12 @@ impl Stage {
                 CompiledStage::Trim(characters.clone())
             }
             Self::BeforeQuery {} => CompiledStage::BeforeQuery,
+            Self::UriEncode { max_output_bytes } => {
+                if !(1..=VALUE_LIMIT).contains(max_output_bytes) {
+                    return Err(bad("invalid_wordpress_uri_output_limit"));
+                }
+                CompiledStage::UriEncode(*max_output_bytes)
+            }
             Self::UnicodeNfc { unicode_version } => {
                 if unicode_version != "16.0.0"
                     || unicode_normalization::UNICODE_VERSION != (16, 0, 0)
@@ -280,6 +290,33 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
             CompiledStage::BeforeQuery => value.split('?').next().unwrap().into(),
+            CompiledStage::UriEncode(limit) => {
+                // Explicit application projection: stop before an entire encoded
+                // scalar exceeds the configured budget. Never rewrite HTTP bytes.
+                let mut output = String::new();
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                for character in value.chars() {
+                    let cost = if character.is_ascii() {
+                        1
+                    } else {
+                        character.len_utf8() * 3
+                    };
+                    if output.len() + cost > *limit {
+                        break;
+                    }
+                    if character.is_ascii() {
+                        output.push(character);
+                    } else {
+                        let mut bytes = [0; 4];
+                        for byte in character.encode_utf8(&mut bytes).bytes() {
+                            output.push('%');
+                            output.push(char::from(HEX[usize::from(byte >> 4)]));
+                            output.push(char::from(HEX[usize::from(byte & 15)]));
+                        }
+                    }
+                }
+                output
+            }
             CompiledStage::UnicodeNfc => {
                 let mut output = String::new();
                 for character in value.nfc() {
@@ -349,6 +386,122 @@ mod tests {
             .map(Stage::compile)
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
+    }
+    #[test]
+    fn uri_encoding_preserves_ascii_and_stops_before_a_whole_scalar_overflows() {
+        let stage = json!([{"kind":"uri_encode","max_output_bytes":200}]);
+        assert_eq!(
+            project(stage.clone(), "A /?%5F+~\t猫é🦀").unwrap(),
+            "A /?%5F+~\t%e7%8c%ab%c3%a9%f0%9f%a6%80"
+        );
+        assert_eq!(
+            project(stage.clone(), &"a".repeat(205)).unwrap(),
+            "a".repeat(200)
+        );
+        assert_eq!(
+            project(stage.clone(), &format!("{}abcd", "猫".repeat(22))).unwrap(),
+            format!("{}ab", "%e7%8c%ab".repeat(22))
+        );
+        assert_eq!(
+            project(stage.clone(), &format!("{}éx", "a".repeat(195))).unwrap(),
+            "a".repeat(195)
+        );
+        assert_eq!(
+            project(stage, &"猫".repeat(23)).unwrap(),
+            "%e7%8c%ab".repeat(22)
+        );
+        assert_eq!(
+            project(
+                json!([{"kind":"uri_encode","max_output_bytes":5}]),
+                "éASCII"
+            )
+            .unwrap(),
+            ""
+        );
+        // A later predicate transform still executes after deliberate truncation.
+        assert_eq!(
+            project(
+                json!([
+                    {"kind":"uri_encode","max_output_bytes":6},
+                    {"kind":"translate","mappings":[{"from":"%c3%a9","to":"marker"}]}
+                ]),
+                "é-tail"
+            )
+            .unwrap(),
+            "marker"
+        );
+    }
+    #[test]
+    fn uri_limits_are_explicit_and_do_not_hide_input_errors() {
+        for limit in [0, 8193] {
+            assert!(
+                project(
+                    json!([{"kind":"uri_encode","max_output_bytes":limit}]),
+                    "safe"
+                )
+                .is_err()
+            );
+        }
+        for source in [
+            json!({"kind":"uri_encode"}),
+            json!({"kind":"uri_encode","max_output_bytes":-1}),
+            json!({"kind":"uri_encode","max_output_bytes":200,"unknown":true}),
+        ] {
+            assert!(serde_json::from_value::<Stage>(source).is_err());
+        }
+        let stage = json!([{"kind":"uri_encode","max_output_bytes":1}]);
+        assert!(project(stage.clone(), &"a".repeat(8193)).is_err());
+        assert!(project(stage, "safe\0hidden").is_err());
+        assert_eq!(
+            project(
+                json!([{"kind":"uri_encode","max_output_bytes":8192}]),
+                &"a".repeat(8192)
+            )
+            .unwrap()
+            .len(),
+            8192
+        );
+    }
+    #[test]
+    fn uri_encoder_matches_an_independent_reference_on_short_mixed_strings() {
+        let alphabet = ["a", "é", "猫", "🦀"];
+        for length in 0..=5_u32 {
+            for mut index in 0..4_usize.pow(length) {
+                let mut input = String::new();
+                let mut pieces = Vec::new();
+                for _ in 0..length {
+                    let scalar = alphabet[index % 4];
+                    index /= 4;
+                    input.push_str(scalar);
+                    pieces.push(if scalar.is_ascii() {
+                        scalar.to_owned()
+                    } else {
+                        scalar
+                            .as_bytes()
+                            .iter()
+                            .map(|b| format!("%{b:02x}"))
+                            .collect::<String>()
+                    });
+                }
+                for limit in [1, 5, 6, 8, 9, 11, 12, 17, 30, 60] {
+                    let mut expected = String::new();
+                    for piece in &pieces {
+                        if expected.len() + piece.len() > limit {
+                            break;
+                        }
+                        expected.push_str(piece);
+                    }
+                    assert_eq!(
+                        project(
+                            json!([{"kind":"uri_encode","max_output_bytes":limit}]),
+                            &input
+                        )
+                        .unwrap(),
+                        expected
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn versioned_nfc_composes_reorders_and_preserves_compatibility_characters() {

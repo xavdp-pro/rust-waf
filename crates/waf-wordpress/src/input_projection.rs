@@ -13,6 +13,9 @@ pub(crate) enum Stage {
         pattern: String,
         replacement: String,
     },
+    RemoveSequences {
+        sequences: Vec<String>,
+    },
     Trim {
         characters: String,
     },
@@ -35,6 +38,7 @@ pub(crate) enum CompiledStage {
         pattern: Regex,
         tokens: Vec<Token>,
     },
+    RemoveSequences(Vec<String>),
     Trim(String),
     BeforeQuery,
     FormEncodeSegments {
@@ -96,6 +100,31 @@ impl Stage {
                     return Err(bad("invalid_wordpress_projection_replacement"));
                 }
                 CompiledStage::Replace { pattern, tokens }
+            }
+            Self::RemoveSequences { sequences } => {
+                // Equal-length words without prefix/suffix overlaps have a unique deletion
+                // fixed point. Streaming removal therefore agrees with repeated global deletion.
+                let width = sequences.first().map_or(0, |s| s.len());
+                if sequences.is_empty()
+                    || sequences.len() > 8
+                    || !(2..=64).contains(&width)
+                    || sequences
+                        .iter()
+                        .any(|s| s.len() != width || s.contains('\0'))
+                {
+                    return Err(bad("invalid_wordpress_projection_sequences"));
+                }
+                for (i, left) in sequences.iter().enumerate() {
+                    for (j, right) in sequences.iter().enumerate() {
+                        if (i != j && left == right)
+                            || (1..width)
+                                .any(|n| left.as_bytes()[width - n..] == right.as_bytes()[..n])
+                        {
+                            return Err(bad("ambiguous_wordpress_projection_sequences"));
+                        }
+                    }
+                }
+                CompiledStage::RemoveSequences(sequences.clone())
             }
             Self::Trim { characters } => {
                 if characters.is_empty() || characters.len() > 64 || characters.contains('\0') {
@@ -162,6 +191,17 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                     end = matched.end();
                 }
                 append(&mut out, &value[end..])?;
+                out
+            }
+            CompiledStage::RemoveSequences(sequences) => {
+                let mut out = String::with_capacity(value.len());
+                for character in value.chars() {
+                    out.push(character);
+                    while let Some(sequence) = sequences.iter().find(|s| out.ends_with(s.as_str()))
+                    {
+                        out.truncate(out.len() - sequence.len());
+                    }
+                }
                 out
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
@@ -345,5 +385,86 @@ mod tests {
         assert!(
             serde_json::from_value::<Stage>(json!({"kind":"before_query","unknown":true})).is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use super::*;
+    use serde_json::json;
+    fn compile(words: &[&str]) -> Result<CompiledStage> {
+        let stage: Stage =
+            serde_json::from_value(json!({"kind":"remove_sequences","sequences":words})).unwrap();
+        stage.compile()
+    }
+    #[test]
+    fn streaming_deletion_agrees_with_independent_repeated_global_deletion() {
+        let words = ["AB", "AC"];
+        let stage = compile(&words).unwrap();
+        for length in 0..=8 {
+            for mut index in 0..3_usize.pow(length) {
+                let mut input = String::new();
+                for _ in 0..length {
+                    input.push(b"ABC"[index % 3] as char);
+                    index /= 3;
+                }
+                let mut expected = input.clone();
+                loop {
+                    let before = expected.clone();
+                    for word in words {
+                        expected = expected.replace(word, "");
+                    }
+                    if expected == before {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    apply(std::slice::from_ref(&stage), input).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+    #[test]
+    fn nested_sequences_and_unicode_reach_full_fixed_point_within_the_input_bound() {
+        let stage = compile(&["XY"]).unwrap();
+        assert_eq!(
+            apply(std::slice::from_ref(&stage), "prefixXXYYsuffix".into()).unwrap(),
+            "prefixsuffix"
+        );
+        assert_eq!(
+            apply(
+                &[stage],
+                format!("{}{}", "X".repeat(4096), "Y".repeat(4096))
+            )
+            .unwrap(),
+            ""
+        );
+        assert_eq!(
+            apply(&[compile(&["αβ"]).unwrap()], "ααββé".into()).unwrap(),
+            "é"
+        );
+    }
+    #[test]
+    fn empty_duplicate_variable_width_and_overlapping_sequence_sets_fail_startup() {
+        for words in [
+            vec![],
+            vec![""],
+            vec!["X"],
+            vec!["XY", "XY"],
+            vec!["XY", "XYZ"],
+            vec!["AB", "BC"],
+            vec!["AA"],
+            vec!["ABAB"],
+            vec!["X\0"],
+        ] {
+            assert!(compile(&words).is_err());
+        }
+        let too_many = (0..9)
+            .map(|i| format!("A{}", char::from(b'b' + i)))
+            .collect::<Vec<_>>();
+        let references = too_many.iter().map(String::as_str).collect::<Vec<_>>();
+        assert!(compile(&references).is_err());
+        assert!(compile(&[&"X".repeat(65)]).is_err());
     }
 }

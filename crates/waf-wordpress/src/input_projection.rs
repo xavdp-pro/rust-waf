@@ -14,6 +14,8 @@ pub(crate) enum Stage {
         replacement: String,
         #[serde(default)]
         skip_pattern: Option<String>,
+        #[serde(default)]
+        preserve_prefix_pattern: Option<String>,
     },
     RemoveSequences {
         sequences: Vec<String>,
@@ -42,6 +44,7 @@ pub(crate) enum CompiledStage {
         pattern: Regex,
         tokens: Vec<Token>,
         skip: Option<Regex>,
+        preserve_prefix: Option<Regex>,
     },
     RemoveSequences {
         sequences: Vec<String>,
@@ -74,6 +77,7 @@ impl Stage {
                 pattern: source,
                 replacement,
                 skip_pattern,
+                preserve_prefix_pattern,
             } => {
                 let pattern = pattern(source)?;
                 if replacement.len() > 1024 || replacement.contains('\0') {
@@ -112,6 +116,10 @@ impl Stage {
                     pattern,
                     tokens,
                     skip: skip_pattern.as_deref().map(self::pattern).transpose()?,
+                    preserve_prefix: preserve_prefix_pattern
+                        .as_deref()
+                        .map(self::pattern)
+                        .transpose()?,
                 }
             }
             Self::RemoveSequences {
@@ -195,15 +203,23 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                 pattern,
                 tokens,
                 skip,
+                preserve_prefix,
             } => {
                 if skip.as_ref().is_some_and(|guard| guard.is_match(&value)) {
                     value
                 } else {
+                    let prefix_end = preserve_prefix
+                        .as_ref()
+                        .and_then(|guard| guard.find(&value))
+                        .filter(|matched| matched.start() == 0)
+                        .map_or(0, |matched| matched.end());
                     let mut out = String::new();
+                    append(&mut out, &value[..prefix_end])?;
+                    let suffix = &value[prefix_end..];
                     let mut end = 0;
-                    for captures in pattern.captures_iter(&value) {
+                    for captures in pattern.captures_iter(suffix) {
                         let matched = captures.get(0).unwrap();
-                        append(&mut out, &value[end..matched.start()])?;
+                        append(&mut out, &suffix[end..matched.start()])?;
                         for token in tokens {
                             match token {
                                 Token::Literal(text) => append(&mut out, text)?,
@@ -216,7 +232,7 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                         }
                         end = matched.end();
                     }
-                    append(&mut out, &value[end..])?;
+                    append(&mut out, &suffix[end..])?;
                     out
                 }
             }
@@ -365,6 +381,25 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn preserved_prefix_is_exact_and_replacement_is_suffix_relative() {
+        let stage = json!([{"kind":"replace","pattern":"x","replacement":"y","preserve_prefix_pattern":"^[^:]+:"}]);
+        assert_eq!(project(stage.clone(), "xé:x/x").unwrap(), "xé:y/y");
+        assert_eq!(project(stage.clone(), "xxx").unwrap(), "yyy");
+        assert_eq!(project(json!([{"kind":"replace","pattern":"^(.+)$","replacement":"[${1}]","preserve_prefix_pattern":"^[^:]+:"}]), "é:x").unwrap(), "é:[x]");
+        assert_eq!(project(json!([{"kind":"replace","pattern":"^|$","replacement":"!","preserve_prefix_pattern":".*"}]), "é").unwrap(), "é!");
+        assert_eq!(project(json!([{"kind":"replace","pattern":"x","replacement":"y","preserve_prefix_pattern":"tail:"}]), "x-tail:x").unwrap(), "y-tail:y");
+        assert_eq!(project(json!([{"kind":"replace","pattern":"x","replacement":"y","preserve_prefix_pattern":"^prefix:","skip_pattern":"x$"}]), "prefix:x").unwrap(), "prefix:x");
+    }
+    #[test]
+    fn preserved_prefix_still_counts_toward_bounds_and_validates_eagerly() {
+        for prefix in ["", "(", &"a".repeat(2049)] {
+            assert!(project(json!([{"kind":"replace","pattern":"x","replacement":"y","preserve_prefix_pattern":prefix,"skip_pattern":".*"}]), "x").is_err());
+        }
+        assert!(project(json!([{"kind":"replace","pattern":"x","replacement":"yy","preserve_prefix_pattern":"^a+"}]), &format!("{}x", "a".repeat(8191))).is_err());
+        assert_eq!(project(json!([{"kind":"replace","pattern":"x","replacement":"y","preserve_prefix_pattern":"^a+"}]), &format!("{}x", "a".repeat(8191))).unwrap().len(), 8192);
+        assert!(project(json!([{"kind":"replace","pattern":"(","replacement":"y","preserve_prefix_pattern":".*"}]), "x").is_err());
     }
     #[test]
     fn captures_unicode_zero_width_and_order_preserve_exact_projection() {

@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Exhaustive casing fingerprint diagnostic
+
+An explicitly ignored diagnostic collects each non-NUL Unicode scalar's actual `unicode_lowercase` result for versions 15.0.0 and 16.0.0. It hashes big-endian scalar/length plus result bytes, verifies 1,112,063 admitted scalars and reports exclusions separately. This collector does not assert application equivalence or count as efficacy evidence; compare its stream with an independently collected native oracle. It is opt-in so normal development checks do not repeat the exhaustive collection when tables are unchanged. No application/site data or private expected hashes are embedded.
+
+The explicit diagnostic completes for both versions; all 71 affected WordPress semantic cases pass with the collector ignored by default, as do clippy/formatting and foundation checks. Independent Cursor review finds no blocker. Unchanged core/transport/scorer/statistics evidence remains the parent checkpoint. The compiled runtime implementation is unchanged. See [collection command and limits](../crates/waf-wordpress/README.md#exhaustive-scalar-fingerprint-diagnostic).
+
 ## Versioned contextual Unicode lowercase
 
 The opt-in `unicode_lowercase` stage requires an explicit `unicode_version` of 15.0.0 or 16.0.0. Exact mapping and matching context-property dependencies keep casing independent of compiler upgrades and avoid mixing old mappings with newer properties. Bounded property ranges and original-input neighbor context provide final sigma without repeated suffix scans. Expansion errors preserve existing input/output and complete original HTTP inspection/forwarding. See the [contract](../crates/waf-wordpress/README.md#versioned-default-unicode-lowercase).

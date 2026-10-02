@@ -206,3 +206,13 @@ For U+03A3, the final form is selected only when a preceding cased character exi
 This is default Unicode lowercase, not locale-specific casing or case folding: dotted capital I expands to `i` plus a combining dot, capital sharp S becomes sharp S, and sharp S/compatibility ligatures are not expanded as case folding would. For example, `ΟΣ` becomes `ος`, while `ΟΣΑ` becomes `οσα`. App authors must establish actual PHP/extension version, composition and request-time equivalence independently; ICU's reported Unicode version does not establish a different extension's casing tables.
 
 Sources: [mapping API/version](https://github.com/yeslogic/unicode-case-mapping), [Unicode default casing](https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-3/), [PHP conditional sigma changelog](https://www.php.net/mb-strtolower). The dependency license is retained at [Unicode 16 mapping license](../../licenses/unicode-case-mapping-1.0.0.txt) and [Unicode 15 mapping license](../../licenses/unicode-case-mapping-0.5.0.txt).
+
+## Exhaustive scalar fingerprint diagnostic
+
+```sh
+cargo test -p waf-wordpress collect_exhaustive_admitted_scalar_lowercase_fingerprints --locked -- --ignored --nocapture
+```
+
+This optional collector invokes the actual bounded lowercase implementation on every admitted single-scalar UTF-8 input for both supported versions. NUL is outside the stage's admitted domain, and surrogate codepoints cannot form Rust characters. The fixed accounting is 1,112,063 admitted scalars, one excluded NUL and 2048 excluded surrogates. Each SHA256 stream is ordered by scalar and framed as big-endian 32-bit scalar, big-endian 32-bit output byte length, and output bytes. Records use the `LOWERCASE_SCALAR_FINGERPRINT` prefix and include declared version, count, changed count and digest.
+
+A passing collector proves completion/accounting only. Compare counts/framing/digest with an independently implemented native oracle before claiming scalar API parity. Single-scalar equality does not qualify context properties, mixed strings, HTTP binding, request-time hooks, full WordPress normalizers or security effectiveness. The diagnostic stays ignored by default to avoid redundant exhaustive work on unrelated changes; targeted unit/transport checks still run normally.

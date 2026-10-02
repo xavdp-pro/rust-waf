@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Scoped selected-input constraints
+
+The generic WordPress adapter now accepts optional evidence-bearing scalar input constraints with exact path/action/wire-method scope, explicit GP bindings, ordered falsey header/target fallbacks and raw/before-query projections. Strict multipart layout must agree with the independent MIME parser. Selected values never enter context/decision serialization; pre-backend denials retain site policy/profile provenance and do not automatically start bans. No site/plugin constraint is enabled by default.
+
+All 78 Rust semantic cases and 28 neutral HTTP groups pass with clippy, formatting, foundation, scorer and statistics checks. The new protocol group preserves allowed bytes, correlates denied requests with zero neutral-backend execution, and preserves sibling/core inspection. This is a reusable mechanism, not plugin or deployment acceptance; actual sink/helper behavior, artifact resources, workflows, Browser and full independent/performance gates remain pending. See [the input contract](../crates/waf-wordpress/README.md).
+
 ## Conservative multipart text origins and explicit AJAX media
 
 The shared engine can attribute canonical multipart UTF-8 text leaves through a bounded borrowed physical layout and an independent Multer agreement pass. Raw whole-body and existing per-part inspection remain complete. Files, filenames, names, headers, cross-part matches and ambiguous bindings cannot borrow text exceptions. Unsupported framing, headers or content-type parameters withhold provenance; malformed syntax still denies forwarding.

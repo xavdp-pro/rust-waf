@@ -1,7 +1,9 @@
 //! WordPress semantics, separate from the application-independent shared engine.
 mod form_consumer;
+mod input_constraint;
 use bytes::Bytes;
 use form_consumer::FormConsumer;
+use input_constraint::InputConstraint;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,6 +57,8 @@ struct Site {
     login_consumers: Vec<LoginConsumer>,
     #[serde(default)]
     form_consumers: Vec<FormConsumer>,
+    #[serde(default)]
+    input_constraints: Vec<InputConstraint>,
 }
 fn root() -> String {
     "/".into()
@@ -72,12 +76,14 @@ impl Default for Site {
             method_rules: Vec::new(),
             login_consumers: Vec::new(),
             form_consumers: Vec::new(),
+            input_constraints: Vec::new(),
         }
     }
 }
 pub struct Wordpress {
     site: Site,
     rules: Vec<Regex>,
+    input_patterns: Vec<Regex>,
     pub profile_id: String,
     site_profile_id: Option<String>,
 }
@@ -96,6 +102,8 @@ pub struct Context {
     pub confirmed_fields: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consumer_profile: Option<String>,
+    #[serde(skip)]
+    input_denial: Option<String>,
 }
 #[derive(Debug)]
 pub struct Denial {
@@ -247,6 +255,7 @@ impl Wordpress {
             || site.rest_entry_paths.len() > 32
             || site.login_consumers.len() > 32
             || site.form_consumers.len() > 32
+            || site.input_constraints.len() > 32
         {
             return Err(bad("invalid_wordpress_site_bounds"));
         }
@@ -294,8 +303,14 @@ impl Wordpress {
                     .map_err(|_| bad("invalid_wordpress_route_regex"))?,
             );
         }
+        let input_patterns = site
+            .input_constraints
+            .iter()
+            .map(|rule| rule.compile(&site.base_path, &mut ids))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Some(Self {
             site,
+            input_patterns,
             rules,
             profile_id: base.profile_id.clone(),
             site_profile_id: modules
@@ -304,6 +319,15 @@ impl Wordpress {
         }))
     }
     pub async fn analyze(&self, request: Request<'_>) -> Result<Context> {
+        let input_request = Request {
+            path: request.path,
+            query: request.query,
+            wire_method: request.wire_method,
+            headers: request.headers,
+            content_type: request.content_type,
+            body: request.body.clone(),
+            max_parts: request.max_parts,
+        };
         let Request {
             path,
             query,
@@ -548,6 +572,18 @@ impl Wordpress {
         } else {
             self.site_profile_id.clone()
         };
+        let mut input_denial = None;
+        for (rule, pattern) in self.site.input_constraints.iter().zip(&self.input_patterns) {
+            if rule.path == path
+                && rule.methods.iter().any(|method| method == wire_method)
+                && (rule.actions.is_empty()
+                    || action.as_ref().is_some_and(|a| rule.actions.contains(a)))
+                && rule.rejects(pattern, &input_request).await?
+            {
+                input_denial = Some(rule.id.clone());
+                break;
+            }
+        }
         Ok(Context {
             family,
             effective_method: effective,
@@ -557,6 +593,7 @@ impl Wordpress {
             action,
             confirmed_fields,
             consumer_profile,
+            input_denial,
         })
     }
     pub fn check(&self, context: &Context, trusted: bool) -> Option<Denial> {
@@ -566,6 +603,18 @@ impl Wordpress {
                 reason: "wordpress_administration_requires_trust",
                 policy_id: None,
                 profile_id: self.profile_id.clone(),
+            });
+        }
+        if let Some(id) = &context.input_denial {
+            return Some(Denial {
+                status: 403,
+                reason: "wordpress_input_constraint",
+                policy_id: Some(id.clone()),
+                profile_id: self
+                    .site_profile_id
+                    .as_ref()
+                    .unwrap_or(&self.profile_id)
+                    .clone(),
             });
         }
         for (rule, pattern) in self.site.method_rules.iter().zip(&self.rules) {

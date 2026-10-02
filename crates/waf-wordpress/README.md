@@ -76,3 +76,37 @@ The adapter does not validate application nonces, tokens, honeypots, timing, rol
 Run `cargo test -p waf-wordpress --locked` for twenty-one semantic tests and `cargo test -p waf-proxy --locked` for actual HTTP decisions/correlated neutral-backend checks. Five new semantic cases cover explicit/absent consumers, decoded fields/identifiers, collisions, methods/media/dispatch, parser bounds and startup rejection. Two new protocol groups prove unchanged allowed bytes, correlated pre-backend negative denials and unapplied sibling-hit diagnostics. These do not qualify browser workflows, plugin-modified dispatch, PHP execution or artifact-specific resources. Broader content-field formats, nonce/role integration, plugin modules and deployment remain pending. Requalify site behavior after plugin/theme/core changes.
 
 The semantics are based on primary [WordPress REST dispatch](https://developer.wordpress.org/reference/classes/wp_rest_server/serve_request/), [route loading](https://developer.wordpress.org/reference/functions/rest_api_loaded/) and [PHP form parsing](https://www.php.net/manual/en/function.parse-str.php). This is original Rust code; no WordPress PHP source was copied into this public crate.
+
+## Scoped input constraints
+
+Optional site `input_constraints` reject a selected scalar input without exempting a route, body, sibling field or core rule. No constraint is enabled by default. A fictional declaration is:
+
+```json
+{
+  "id": "example.return-input",
+  "path": "/wp-admin/admin-ajax.php",
+  "actions": ["example_draft"],
+  "methods": ["GET", "POST"],
+  "request_order": "GP",
+  "arg_separator": "&",
+  "max_input_vars": 1000,
+  "sources": [
+    {"kind": "request_parameter", "name": "return_url"},
+    {"kind": "header", "name": "Referer"},
+    {"kind": "request_target"}
+  ],
+  "projection": "before_query",
+  "reject_pattern": "FORBIDDEN",
+  "evidence": "fictional-installed-scalar-consumer"
+}
+```
+
+The exact canonical path and explicit **wire** methods delimit the consumer. Nonempty actions are supported only on the configured installation's canonical admin-ajax/admin-post endpoints, where the adapter resolves PHP action dispatch. An empty actions list applies to every action on that exact path; it is an explicit policy scope, not inferred plugin behavior. At most 32 constraints, 32 unique actions, four unique ordered sources and bounded nonempty patterns/evidence are accepted. Rule IDs share the existing method/consumer uniqueness namespace. Settings/provenance contribute to the effective fingerprint.
+
+`request_parameter` resolves one scalar using declared PHP GP order: POST first, otherwise GET. Only wire POST URL-encoded or multipart forms populate POST; JSON and other methods do not. Splitting precedes one URL decoding pass for form/query names and selected values. MIME names/values are literal. PHP leading-space/dot normalization is considered; duplicate selected aliases, arrays, decoded-name NUL ambiguity, non-UTF-8 selected values and NUL values are rejected. Each relevant source parser checks the declared variable count, including unrelated pairs; over-limit input is rejected instead of guessing which binding FPM retained. Values are limited to 8192 bytes. Uploaded files never become POST values. Multipart requires strict physical layout and independent Multer agreement; unsupported metadata/framing denies the scoped input rather than guessing a fallback.
+
+The ordered sources use PHP scalar truthiness (`""` and `"0"` are falsey). A present **POST** binding prevents interpreting the corresponding GET binding at all, including when POST is falsey; the next source is then chosen. A selected header is case-insensitive and must be unique; ambiguous later headers are irrelevant when an earlier source was selected. `request_target` is the original path plus literal query, must be last, and adds no hostname. `raw` inspects that selected value unchanged; `before_query` takes its literal prefix before the first question mark. Neither projection percent-decodes headers/targets, strips fragments, normalizes URL paths or emulates application URL hooks. The site must qualify its actual selected source and every later helper/filter before deriving a protection pattern.
+
+Matches produce a pre-backend 403 with reason `wordpress_input_constraint`, policy/profile identity and no input values. Application access/method checks and complete core inspection of forwarded requests remain active; trusted access does not bypass a constraint. Parser ambiguities return 400. This is an explicit application input policy, not an automatically reliable attack classifier: these denials do not start bans, and existing ban/observe contracts are unchanged. Native authentication, nonces, roles and ownership remain mandatory in WordPress.
+
+Five semantic tests and a neutral HTTP group exercise scalar scope, GP/falsey selection, source isolation, selected/header ambiguity, media/file handling, bounds/startup rejection, original-byte forwarding and correlated non-forwarding. A valid constraint cannot suppress an unrelated core match. Actual PHP/helper behavior, plugin virtual patches, artifact resources, Browser, independent effectiveness and matching performance remain separate qualification gates. GP and ampersand declarations are verified deployment prerequisites; other orders/separators fail startup. Unknown multipart binding is a request-wide fail-closed 400, because treating a potentially consumed POST field as absent would invent an unsafe fallback. Overlapping constraints intersect for forwarding; only the first denying policy is reported.

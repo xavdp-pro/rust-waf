@@ -965,3 +965,250 @@ fn multipart_media_contract_is_bounded_explicit_and_fingerprinted() {
         compose(profiles, "example-site").unwrap().fingerprint
     );
 }
+
+fn input_policy() -> Wordpress {
+    wordpress(json!({"schema_version":1,"input_constraints":[{
+        "id":"example_input","path":"/wp-admin/admin-ajax.php","actions":["example_draft"],
+        "methods":["GET","POST"],"request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"request_parameter","name":"return_url"},{"kind":"header","name":"Referer"},{"kind":"request_target"}],
+        "projection":"before_query","reject_pattern":"FORBIDDEN","evidence":"fictional-scalar-handler"}]}))
+}
+fn input_request<'a>(
+    query: &'a str,
+    body: &'static str,
+    headers: &'a [(String, String)],
+) -> Request<'a> {
+    Request {
+        path: "/wp-admin/admin-ajax.php",
+        query,
+        wire_method: "POST",
+        headers,
+        content_type: "application/x-www-form-urlencoded",
+        body: Bytes::from(body),
+        max_parts: 128,
+    }
+}
+#[tokio::test]
+async fn input_constraints_select_only_declared_scalar_and_keep_content_private() {
+    let wp = input_policy();
+    for body in [
+        "action=example_draft&return_url=/FORBIDDEN",
+        "action=example_draft&return_url=%2FFORBIDDEN",
+    ] {
+        let context = wp.analyze(input_request("", body, &[])).await.unwrap();
+        let denial = wp.check(&context, false).unwrap();
+        assert_eq!(denial.reason, "wordpress_input_constraint");
+        assert_eq!(denial.policy_id.as_deref(), Some("example_input"));
+        assert_eq!(denial.profile_id, "fictional-site");
+        assert!(
+            !serde_json::to_string(&context)
+                .unwrap()
+                .contains("FORBIDDEN")
+        );
+        assert!(wp.check(&context, true).is_some());
+    }
+    for body in [
+        "action=example_draft&body=FORBIDDEN&return_url=/safe",
+        "action=other&return_url=/FORBIDDEN",
+        "action=example_draft&return_url=/safe%3Fsearch%3DFORBIDDEN",
+        "action=example_draft&other=literal%26return_url%3D/FORBIDDEN",
+    ] {
+        assert!(
+            wp.check(
+                &wp.analyze(input_request("", body, &[])).await.unwrap(),
+                false
+            )
+            .is_none()
+        );
+    }
+    let mut other = input_request("", "action=example_draft&return_url=/FORBIDDEN", &[]);
+    other.path = "/other";
+    assert!(wp.check(&wp.analyze(other).await.unwrap(), false).is_none());
+}
+#[tokio::test]
+async fn input_constraints_resolve_gp_before_falsey_header_and_target_fallbacks() {
+    let wp = input_policy();
+    let safe = [("Referer".into(), "/safe".into())];
+    let bad = [("referer".into(), "/FORBIDDEN".into())];
+    for body in [
+        "action=example_draft&return_url=",
+        "action=example_draft&return_url=0",
+    ] {
+        // Falsey POST overrides GET; it does not choose the truthy GET value.
+        let context = wp
+            .analyze(input_request("return_url=/FORBIDDEN", body, &safe))
+            .await
+            .unwrap();
+        assert!(wp.check(&context, false).is_none());
+        assert!(
+            wp.check(
+                &wp.analyze(input_request("return_url=/safe", body, &bad))
+                    .await
+                    .unwrap(),
+                false
+            )
+            .is_some()
+        );
+    }
+    assert!(
+        wp.check(
+            &wp.analyze(input_request(
+                "return_url=/FORBIDDEN",
+                "action=example_draft",
+                &safe
+            ))
+            .await
+            .unwrap(),
+            false
+        )
+        .is_some()
+    );
+    assert!(
+        wp.check(
+            &wp.analyze(input_request(
+                "return_url=/FORBIDDEN",
+                "action=example_draft&return_url=/safe",
+                &bad
+            ))
+            .await
+            .unwrap(),
+            false
+        )
+        .is_none()
+    );
+    for query in [
+        "return_url[]=/FORBIDDEN",
+        "return_url=%FF",
+        "return_url=/FORBIDDEN&return.url=/other",
+    ] {
+        let context = wp
+            .analyze(input_request(
+                query,
+                "action=example_draft&return_url=/safe",
+                &bad,
+            ))
+            .await
+            .unwrap();
+        assert!(wp.check(&context, false).is_none());
+    }
+    let mut get = input_request(
+        "action=example_draft&return_url=/FORBIDDEN",
+        "return_url=/safe",
+        &safe,
+    );
+    get.wire_method = "GET";
+    assert!(wp.check(&wp.analyze(get).await.unwrap(), false).is_some());
+    let mut json = input_request("action=example_draft", "return_url=/FORBIDDEN", &safe);
+    json.content_type = "application/json";
+    assert!(wp.check(&wp.analyze(json).await.unwrap(), false).is_none());
+    let wp = wordpress(json!({"schema_version":1,"input_constraints":[{
+        "id":"target_input","path":"/FORBIDDEN","actions":[],"methods":["GET"],
+        "request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"header","name":"Referer"},{"kind":"request_target"}],
+        "projection":"before_query","reject_pattern":"FORBIDDEN","evidence":"fictional-target"}]}));
+    let input = request("/FORBIDDEN", "ignored=1", "GET");
+    assert!(wp.check(&wp.analyze(input).await.unwrap(), false).is_some());
+}
+#[tokio::test]
+async fn input_constraints_reject_binding_ambiguity_and_bounded_metadata() {
+    let wp = input_policy();
+    for body in [
+        "action=example_draft&return_url[]=safe",
+        "action=example_draft&return_url=/safe&return.url=/other",
+        "action=example_draft&return_url%00suffix=/safe",
+    ] {
+        assert!(wp.analyze(input_request("", body, &[])).await.is_err());
+    }
+    let duplicate = [
+        ("Referer".into(), "/safe".into()),
+        ("referer".into(), "/other".into()),
+    ];
+    assert!(
+        wp.analyze(input_request("", "action=example_draft", &duplicate))
+            .await
+            .is_err()
+    );
+    // Nonselected fallback headers do not participate in the selected scalar binding.
+    assert!(
+        wp.analyze(input_request(
+            "",
+            "action=example_draft&return_url=/safe",
+            &duplicate
+        ))
+        .await
+        .is_ok()
+    );
+    let overflow = format!(
+        "action=example_draft&{}",
+        std::iter::repeat_n("a=1", 1001)
+            .collect::<Vec<_>>()
+            .join("&")
+    );
+    let mut input = input_request("", "", &[]);
+    input.body = Bytes::from(overflow);
+    assert!(wp.analyze(input).await.is_err());
+}
+#[tokio::test]
+async fn input_constraints_multipart_is_literal_and_files_do_not_select_post() {
+    let wp = input_policy();
+    for (value, blocked) in [
+        ("/FORBIDDEN", true),
+        ("/safe?search=FORBIDDEN", false),
+        ("/%46ORBIDDEN", false),
+    ] {
+        let mut input = input_request("", "", &[]);
+        input.content_type = "multipart/form-data; boundary=fixture";
+        input.body = Bytes::from(format!(
+            "--fixture\r\nContent-Disposition: form-data; name=\"action\"\r\n\r\nexample_draft\r\n--fixture\r\nContent-Disposition: form-data; name=\"return_url\"\r\n\r\n{value}\r\n--fixture--\r\n"
+        ));
+        let context = wp.analyze(input).await.unwrap();
+        assert_eq!(wp.check(&context, false).is_some(), blocked);
+    }
+    let mut input = input_request("return_url=/FORBIDDEN", "", &[]);
+    input.content_type = "multipart/form-data; boundary=fixture";
+    input.body=Bytes::from_static(b"--fixture\r\nContent-Disposition: form-data; name=\"action\"\r\n\r\nexample_draft\r\n--fixture\r\nContent-Disposition: form-data; name=\"return_url\"; filename=\"upload.txt\"\r\nContent-Type: text/plain\r\n\r\n/safe\r\n--fixture--\r\n");
+    assert!(wp.check(&wp.analyze(input).await.unwrap(), false).is_some());
+}
+#[test]
+fn input_constraint_invalid_contracts_fail_startup() {
+    let base = json!({"schema_version":1,"input_constraints":[{
+        "id":"example_input","path":"/wp-admin/admin-ajax.php","actions":["example_draft"],
+        "methods":["POST"],"request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"request_parameter","name":"return_url"},{"kind":"request_target"}],
+        "projection":"raw","reject_pattern":"FORBIDDEN","evidence":"fictional"}]});
+    for (key, value) in [
+        ("request_order", json!("PG")),
+        ("projection", json!("decode_everything")),
+        ("reject_pattern", json!(".*")),
+        ("sources", json!([])),
+        (
+            "sources",
+            json!([{"kind":"request_target"},{"kind":"header","name":"Referer"}]),
+        ),
+        ("methods", json!([])),
+        ("path", json!("/../other")),
+        ("evidence", json!("")),
+    ] {
+        let mut config = base.clone();
+        config["input_constraints"][0][key] = value;
+        let modules = BTreeMap::from([
+            (
+                "wordpress".into(),
+                SourcedModule {
+                    profile_id: "base".into(),
+                    layer: Layer::Application,
+                    settings: json!({"schema_version":1}),
+                },
+            ),
+            (
+                "wordpress-site".into(),
+                SourcedModule {
+                    profile_id: "site".into(),
+                    layer: Layer::Site,
+                    settings: config,
+                },
+            ),
+        ]);
+        assert!(Wordpress::from_modules(&modules).is_err());
+    }
+}

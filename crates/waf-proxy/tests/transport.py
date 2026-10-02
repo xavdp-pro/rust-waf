@@ -162,7 +162,7 @@ class Transport(unittest.TestCase):
         data=sock.recv(8192);sock.close()
         self.assertIn(b'408',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before)
     @contextlib.contextmanager
-    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False, login=False, consumer=False):
+    def alternate_proxy(self, name, mode='enforce', reliable=False, exception=False, common=False, wordpress=False, gate=False, field=False, login=False, consumer=False, input_constraint=False):
         config=dict(self.config)
         config['listen_socket']=str(self.tmp/(name+'.sock'))
         if gate:config['ban_lookup_socket']=str(self.tmp/(name+'-lookup.sock'))
@@ -172,7 +172,7 @@ class Transport(unittest.TestCase):
         if not common:core['rules'][0]['high_confidence']=reliable
         core_path=self.tmp/(name+'-core.json');core_path.write_text(json.dumps(core))
         config['profiles']=list(config['profiles']);config['profiles'][0]=str(core_path)
-        if exception or wordpress:
+        if exception or wordpress or input_constraint:
             site=json.loads((ROOT/'profiles/sites/example.json').read_text())
             if exception:
                 site['exceptions']=[{'rule_id':'fixture.sentinel','path_pattern':'^/feedback/$','methods':['POST'],'reason':'Synthetic feedback compatibility fixture','evidence':'protocol-test-scoped-exception'}]
@@ -194,6 +194,12 @@ class Transport(unittest.TestCase):
                      'form_field':'form[fields][1]','guards':[{'field':'form[id]','equals':'17'}],
                      'evidence':'fictional-handler-and-form-schema'}]}}]
             if consumer == 'multipart':site['modules'][0]['settings']['form_consumers'][0]['media_types']=['application/x-www-form-urlencoded','multipart/form-data']
+            if input_constraint:
+                site['modules']=[{'name':'wordpress-site','settings':{'schema_version':1,'input_constraints':[{
+                    'id':'fictional_input','path':'/wp-admin/admin-ajax.php','actions':['fictional_draft'],
+                    'methods':['GET','POST'],'request_order':'GP','arg_separator':'&','max_input_vars':1000,
+                    'sources':[{'kind':'request_parameter','name':'return_url'},{'kind':'header','name':'Referer'},{'kind':'request_target'}],
+                    'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -633,6 +639,66 @@ class Transport(unittest.TestCase):
                 before=len(self.received)
                 status,_,_=self.request(method=method,path=route,body=body(base),socket_path=path,headers={'Content-Type':mime,**extra})
                 self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
+
+    def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
+        with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):
+            route='/wp-admin/admin-ajax.php'
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for payload in [b'action=fictional_draft&return_url=/safe&body=FORBIDDEN',
+                            b'action=fictional_draft&return_url=/safe%3Fsearch%3DFORBIDDEN',
+                            b'action=other&return_url=/FORBIDDEN']:
+                before=len(self.received)
+                status,headers,body=self.request(path=route,body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,200);self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+            cases=[(route,b'action=fictional_draft&return_url=/FORBIDDEN',form),
+                   (route+'?return_url=/FORBIDDEN',b'action=fictional_draft',form),
+                   (route,b'action=fictional_draft',{**form,'Referer':'/FORBIDDEN'}),
+                   (route+'?return_url=/safe',b'action=fictional_draft&return_url=0',{**form,'Referer':'/FORBIDDEN'}),
+                   (route,b'action=fictional_draft&return_url[]=/safe',form),
+                   (route,b'action=fictional_draft&return_url=/safe&body=forbidden-sentinel',form)]
+            for route,payload,extra in cases:
+                before=len(self.received)
+                status,headers,_=self.request(path=route,body=payload,headers=extra,socket_path=path)
+                self.assertGreaterEqual(status,400);self.assertEqual(len(self.received),before)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+                if status==403 and payload.endswith(b'body=forbidden-sentinel'):
+                    self.assertEqual(event['reason'],'rule_match')
+                elif status==403:
+                    self.assertEqual(event['reason'],'wordpress_input_constraint')
+                    self.assertEqual(event['matches'][0]['policy_id'],'fictional_input')
+                    self.assertNotIn('FORBIDDEN',json.dumps(event))
+            def multipart(parts):
+                result=b''
+                for name,value,filename in parts:
+                    disposition='Content-Disposition: form-data; name="'+name+'"'+('; filename="'+filename+'"' if filename else '')
+                    result += b'--input-boundary\r\n'+disposition.encode()+b'\r\n\r\n'+value+b'\r\n'
+                return result+b'--input-boundary--\r\n'
+            mime={'Content-Type':'multipart/form-data; boundary=input-boundary'}
+            for selected in [b'/safe',b'/%46ORBIDDEN',b'/safe?search=FORBIDDEN']:
+                payload=multipart([('action',b'fictional_draft',None),('return_url',selected,None),('body',b'FORBIDDEN',None)])
+                before=len(self.received)
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=mime,socket_path=path)
+                self.assertEqual(status,200);self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+            multipart_cases=[
+                ([('action',b'fictional_draft',None),('return_url',b'/FORBIDDEN',None)],'/wp-admin/admin-ajax.php',mime,403),
+                ([('action',b'fictional_draft',None),('return_url',b'/safe','upload.txt')],'/wp-admin/admin-ajax.php?return_url=/FORBIDDEN',mime,403),
+                ([('action',b'fictional_draft',None),('return_url',b'/safe',None),('return.url',b'/safe',None)],'/wp-admin/admin-ajax.php',mime,400),
+                ([('action',b'fictional_draft',None),('return_url',b'/safe',None)],'/wp-admin/admin-ajax.php',{'Content-Type':'multipart/form-data; boundary=input-boundary; charset=utf-8','Referer':'/safe'},400)]
+            for parts,route,extra,expected in multipart_cases:
+                before=len(self.received)
+                status,headers,_=self.request(path=route,body=multipart(parts),headers=extra,socket_path=path)
+                self.assertEqual(status,expected);self.assertEqual(len(self.received),before)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
+            # Repeated input denials have no implicit confidence/ban promotion.
+            status,_,_=self.request(path='/wp-admin/admin-ajax.php',body=b'action=fictional_draft&return_url=/safe',headers=form,socket_path=path)
+            self.assertEqual(status,200)
 
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()

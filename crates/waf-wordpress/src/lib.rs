@@ -2,6 +2,7 @@
 mod form_consumer;
 mod input_constraint;
 mod input_projection;
+mod input_translation;
 mod parameter_match;
 use bytes::Bytes;
 use form_consumer::FormConsumer;

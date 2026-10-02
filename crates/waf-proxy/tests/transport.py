@@ -208,6 +208,8 @@ class Transport(unittest.TestCase):
                     constraint.update(path='/',path_match='prefix',actions=[],sources=[{'kind':'request_target'}],
                         when_parameter_matches={'name':'command_name','binding':'php83_form_query_union',
                             'pattern':'(?i)^apply_changes$','stages':[{'kind':'trim','characters':' '}]})
+                if input_constraint == 'translate':
+                    site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'translate','mappings':[{'from':'safe','to':'other'},{'from':'safe-marker','to':'FORBIDDEN'},{'from':'q','to':'qqqqqqqqqqqqqqqq'}]}]
                 if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
                 if input_constraint == 'preserved-prefix':
@@ -771,6 +773,28 @@ class Transport(unittest.TestCase):
                     self.assertFalse(event['backend_attempted'])
                     if expected==403:
                         self.assertEqual(event['reason'],'rule_match' if b'forbidden-sentinel' in payload else 'wordpress_input_constraint')
+
+    def test_37_literal_translation_retains_core_and_original_transport(self):
+        with self.alternate_proxy('translate',input_constraint='translate') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for payload,expected in [
+                (b'action=fictional_draft&return_url=/safe-marker',403),
+                (b'action=fictional_draft&return_url=/safe',200),
+                (b'action=other&return_url=/safe-marker',200),
+                (b'action=fictional_draft&return_url=/'+b'q'*513,400),
+                (b'action=fictional_draft&return_url=/safe&body=forbidden-sentinel',403),
+            ]:
+                before=len(self.received)
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,expected);self.assertEqual(len(self.received),before+(expected==200))
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['ban_started'])
+                if expected==200:
+                    self.assertEqual(body,payload);self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                else:
+                    self.assertFalse(event['backend_attempted'])
+                    self.assertEqual(event['reason'],'wordpress_projection_value_limit' if expected==400 else 'rule_match' if b'forbidden-sentinel' in payload else 'wordpress_input_constraint')
 
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):

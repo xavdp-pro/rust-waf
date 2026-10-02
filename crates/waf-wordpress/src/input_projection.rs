@@ -1,6 +1,6 @@
 //! Bounded, opt-in projections of one selected application input. Never rewrites HTTP bytes.
 use super::input_lowercase::Lowercase;
-use super::input_translation::{Mapping, Translation};
+use super::input_translation::{Mapping, OrderedReplacement, Translation};
 use super::{Result, bad};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -39,6 +39,9 @@ pub(crate) enum Stage {
     UnicodeNfc {
         unicode_version: String,
     },
+    OrderedReplace {
+        mappings: Vec<Mapping>,
+    },
     Translate {
         mappings: Vec<Mapping>,
     },
@@ -72,6 +75,7 @@ pub(crate) enum CompiledStage {
     UriEncode(usize),
     UnicodeLowercase(Lowercase),
     UnicodeNfc,
+    OrderedReplace(OrderedReplacement),
     Translate(Translation),
     FormEncodeSegments {
         skip: Regex,
@@ -198,6 +202,9 @@ impl Stage {
                     return Err(bad("invalid_wordpress_unicode_version"));
                 }
                 CompiledStage::UnicodeNfc
+            }
+            Self::OrderedReplace { mappings } => {
+                CompiledStage::OrderedReplace(OrderedReplacement::compile(mappings)?)
             }
             Self::Translate { mappings } => {
                 CompiledStage::Translate(Translation::compile(mappings)?)
@@ -338,6 +345,7 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                 }
                 output
             }
+            CompiledStage::OrderedReplace(table) => table.apply(&value)?,
             CompiledStage::Translate(table) => table.apply(&value)?,
             CompiledStage::EmptyFallback(fallback) => {
                 if value.is_empty() {
@@ -399,6 +407,18 @@ mod tests {
             .map(Stage::compile)
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
+    }
+    #[test]
+    fn ordered_replacement_stage_validates_settings_and_composes_with_later_stages() {
+        for value in [
+            json!({"kind":"ordered_replace"}),
+            json!({"kind":"ordered_replace","mappings":[],"unknown":true}),
+            json!({"kind":"ordered_replace","mappings":[{"from":"x","to":"","unknown":true}]}),
+        ] {
+            assert!(serde_json::from_value::<Stage>(value).is_err());
+        }
+        assert!(project(json!([{"kind":"ordered_replace","mappings":[]}]), "safe").is_err());
+        assert_eq!(project(json!([{ "kind":"ordered_replace","mappings":[{"from":"XY","to":""},{"from":"AB","to":""}] },{ "kind":"empty_fallback","value":"marker" }]), "AXYB").unwrap(), "marker");
     }
     #[test]
     fn tag_projection_composes_without_relaxing_stage_validation() {

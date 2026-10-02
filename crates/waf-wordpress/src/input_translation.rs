@@ -1,4 +1,5 @@
-//! Bounded longest-key, one-pass literal translation. No application tables are built in.
+//! Bounded literal projections with explicit one-pass or ordered semantics.
+//! No application tables are built in.
 use super::{Result, bad};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -95,6 +96,61 @@ impl Translation {
     }
 }
 
+/// Each configured pair is one global non-overlapping replacement pass.
+/// Later pairs inspect the preceding pass output; a pair never rescans itself.
+pub(crate) struct OrderedReplacement {
+    mappings: Vec<(String, String)>,
+}
+impl OrderedReplacement {
+    pub(crate) fn compile(mappings: &[Mapping]) -> Result<Self> {
+        if mappings.is_empty()
+            || mappings.len() > 128
+            || mappings.iter().any(|m| {
+                m.from.is_empty()
+                    || m.from.len() > 16
+                    || m.to.len() > 16
+                    || m.from.contains('\0')
+                    || m.to.contains('\0')
+            })
+        {
+            return Err(bad("invalid_wordpress_ordered_replacement"));
+        }
+        // Order and duplicates are intentional; neither sorting nor deduplication
+        // preserves the declared cascade semantics. At most 4096 table bytes.
+        Ok(Self {
+            mappings: mappings
+                .iter()
+                .map(|m| (m.from.clone(), m.to.clone()))
+                .collect(),
+        })
+    }
+    pub(crate) fn apply(&self, input: &str) -> Result<String> {
+        if input.len() > 8192 || input.contains('\0') {
+            return Err(bad("wordpress_projection_value_limit"));
+        }
+        let mut value = input.to_owned();
+        for (from, to) in &self.mappings {
+            let mut next = String::new();
+            let mut end = 0;
+            for (offset, matched) in value.match_indices(from.as_str()) {
+                append_checked(&mut next, &value[end..offset])?;
+                append_checked(&mut next, to)?;
+                end = offset + matched.len();
+            }
+            append_checked(&mut next, &value[end..])?;
+            value = next;
+        }
+        Ok(value)
+    }
+}
+fn append_checked(output: &mut String, piece: &str) -> Result<()> {
+    if output.len() + piece.len() > 8192 {
+        return Err(bad("wordpress_projection_value_limit"));
+    }
+    output.push_str(piece);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +165,101 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap()
+    }
+    fn ordered(pairs: &[(&str, &str)]) -> OrderedReplacement {
+        OrderedReplacement::compile(
+            &pairs
+                .iter()
+                .map(|(from, to)| Mapping {
+                    from: (*from).into(),
+                    to: (*to).into(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn ordered_passes_cascade_preserve_declared_order_and_do_not_rescan_one_pair() {
+        assert_eq!(
+            ordered(&[("XY", ""), ("AB", "")]).apply("AXYB").unwrap(),
+            ""
+        );
+        assert_eq!(
+            ordered(&[("AB", ""), ("XY", "")]).apply("AXYB").unwrap(),
+            "AB"
+        );
+        assert_eq!(ordered(&[("a", "aa")]).apply("a").unwrap(), "aa");
+        assert_eq!(
+            ordered(&[("a", "aa"), ("a", "aa")]).apply("a").unwrap(),
+            "aaaa"
+        );
+        assert_eq!(ordered(&[("aa", "X")]).apply("aaa").unwrap(), "Xa");
+        assert_eq!(
+            ordered(&[("猫", "é"), ("é", "x")]).apply("猫é😀").unwrap(),
+            "xx😀"
+        );
+    }
+    #[test]
+    fn ordered_tables_and_every_intermediate_value_are_bounded() {
+        for pairs in [
+            vec![],
+            vec![("", "x")],
+            vec![("x\0", "")],
+            vec![("x", "\0")],
+            vec![("12345678901234567", "")],
+            vec![("x", "12345678901234567")],
+            vec![("a", ""); 129],
+        ] {
+            let mappings = pairs
+                .into_iter()
+                .map(|(from, to)| Mapping {
+                    from: from.into(),
+                    to: to.into(),
+                })
+                .collect::<Vec<_>>();
+            assert!(OrderedReplacement::compile(&mappings).is_err());
+        }
+        assert_eq!(ordered(&[("a", ""); 128]).apply("abc").unwrap(), "bc");
+        assert!(ordered(&[("a", "")]).apply(&"a".repeat(8193)).is_err());
+        assert!(ordered(&[("a", "")]).apply("a\0").is_err());
+        assert_eq!(
+            ordered(&[("a", "aa")])
+                .apply(&"a".repeat(4096))
+                .unwrap()
+                .len(),
+            8192
+        );
+        // A later shrinking pass must not excuse an excessive intermediate value.
+        assert!(
+            ordered(&[("a", "aa"), ("aa", "")])
+                .apply(&"a".repeat(4097))
+                .is_err()
+        );
+    }
+    #[test]
+    fn ordered_passes_match_independent_standard_replacement_on_short_strings() {
+        let alphabet = ["A", "B", "X", "Y", "猫"];
+        let tables = [
+            vec![("XY", ""), ("AB", "")],
+            vec![("A", "BA"), ("B", "X")],
+            vec![("猫", "Y"), ("Y", "")],
+            vec![("A", "AA"), ("A", "B")],
+        ];
+        for width in 0..=5u32 {
+            for mut code in 0..5usize.pow(width) {
+                let mut value = String::new();
+                for _ in 0..width {
+                    value.push_str(alphabet[code % 5]);
+                    code /= 5;
+                }
+                for table in &tables {
+                    let expected = table
+                        .iter()
+                        .fold(value.clone(), |v, (from, to)| v.replace(from, to));
+                    assert_eq!(ordered(table).apply(&value).unwrap(), expected);
+                }
+            }
+        }
     }
     #[test]
     fn longest_keys_win_without_recursive_or_order_dependent_translation() {

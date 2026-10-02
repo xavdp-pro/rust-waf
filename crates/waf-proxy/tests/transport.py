@@ -200,8 +200,10 @@ class Transport(unittest.TestCase):
                     'methods':['GET','POST'],'request_order':'GP','arg_separator':'&','max_input_vars':1000,
                     'sources':[{'kind':'request_parameter','name':'return_url'},{'kind':'header','name':'Referer'},{'kind':'request_target'}],
                     'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
-                if input_constraint == 'sequences':
+                if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
+                if input_constraint == 'conditional-sequences':
+                    site['modules'][0]['settings']['input_constraints'][0]['stages'][0]['skip_pattern']='(?i)^keep:'
                 if input_constraint == 'projection':
                     constraint=site['modules'][0]['settings']['input_constraints'][0]
                     constraint['projection']='raw'
@@ -232,7 +234,7 @@ class Transport(unittest.TestCase):
             before=len(self.received)
             for _ in range(2):
                 self.assertEqual(self.request(body=b'forbidden-sentinel',socket_path=path)[0],403)
-            status,headers,_=self.request(socket_path=path)
+            status,headers,_=self.request(body=b'',socket_path=path)
             self.assertEqual(status,429);self.assertIn('retry-after',headers)
             self.assertEqual(len(self.received),before)
             self.assertEqual(self.request(socket_path=path,headers={'X-Waf-Admin-Friend':'1'})[0],200)
@@ -509,7 +511,7 @@ class Transport(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(self.request(path='/feedback/',body=body,socket_path=path,
                     headers={'Content-Type':'application/x-www-form-urlencoded'})[0],403)
-            self.assertEqual(self.request(path='/feedback/',socket_path=path)[0],429)
+            self.assertEqual(self.request(path='/feedback/',body=b'',socket_path=path)[0],429)
             self.assertEqual(len(self.received),before)
             records=[json.loads(line) for line in events.read_text().splitlines()]
             matched=[r for r in records if r['matches']]
@@ -768,6 +770,32 @@ class Transport(unittest.TestCase):
                 event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
                 self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
                 self.assertEqual(event['reason'],'wordpress_input_constraint')
+
+    def test_30_sequence_skip_is_local_and_keeps_constraint_and_wire_inspection(self):
+        with self.alternate_proxy('conditional-sequence-input',input_constraint='conditional-sequences') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            payload=b'action=fictional_draft&return_url=KEEP:FOxxyyRBIDDEN'
+            before=len(self.received)
+            status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+            self.assertEqual(status,200);self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+            self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+            self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+            for value in [b'other:FOxxyyRBIDDEN',b'keep:FORBIDDEN']:
+                before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=b'action=fictional_draft&return_url='+value,headers=form,socket_path=path)
+                self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
+            self.assertEqual(event['reason'],'wordpress_input_constraint')
+            # A skipped projection never grants an exception to a sibling core hit.
+            before=len(self.received)
+            payload=b'action=fictional_draft&return_url=keep:safe&other=forbidden-sentinel'
+            status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+            event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+            self.assertEqual(event['reason'],'rule_match')
+            self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
 
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()

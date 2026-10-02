@@ -29,6 +29,7 @@ pub(crate) enum Stage {
         characters: String,
     },
     BeforeQuery {},
+    Php83StripTags {},
     UriEncode {
         max_output_bytes: usize,
     },
@@ -67,6 +68,7 @@ pub(crate) enum CompiledStage {
     },
     Trim(String),
     BeforeQuery,
+    Php83StripTags,
     UriEncode(usize),
     UnicodeLowercase(Lowercase),
     UnicodeNfc,
@@ -178,6 +180,7 @@ impl Stage {
                 }
                 CompiledStage::Trim(characters.clone())
             }
+            Self::Php83StripTags {} => CompiledStage::Php83StripTags,
             Self::BeforeQuery {} => CompiledStage::BeforeQuery,
             Self::UriEncode { max_output_bytes } => {
                 if !(1..=VALUE_LIMIT).contains(max_output_bytes) {
@@ -297,6 +300,7 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                 }
             }
             CompiledStage::Trim(chars) => value.trim_matches(|c| chars.contains(c)).into(),
+            CompiledStage::Php83StripTags => super::input_tags::strip(&value)?,
             CompiledStage::BeforeQuery => value.split('?').next().unwrap().into(),
             CompiledStage::UriEncode(limit) => {
                 // Explicit application projection: stop before an entire encoded
@@ -395,6 +399,16 @@ mod tests {
             .map(Stage::compile)
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
+    }
+    #[test]
+    fn tag_projection_composes_without_relaxing_stage_validation() {
+        assert!(
+            serde_json::from_value::<Stage>(json!({"kind":"php83_strip_tags","allowed_tags":"b"}))
+                .is_err()
+        );
+        assert_eq!(project(json!([{ "kind":"php83_strip_tags" },{ "kind":"unicode_lowercase","unicode_version":"15.0.0" },{ "kind":"uri_encode","max_output_bytes":200 }]), "<b>É</b>").unwrap(), "%c3%a9");
+        assert!(project(json!([{ "kind":"php83_strip_tags" }]), &"<".repeat(8193)).is_err());
+        assert!(project(json!([{ "kind":"php83_strip_tags" }]), "a\0b").is_err());
     }
     #[test]
     fn lowercase_stage_requires_a_version_and_composes_before_uri_encoding() {

@@ -105,3 +105,7 @@ Site qualification and private profiles are owned by their deployers and maintai
 Use short-lived branches when each step starts: `step-01/profile-contracts`, `step-02/http-proxy`, `step-03/common-rules`, `step-04/wordpress-profile`, `step-05/integration-proof`. Do not create empty permanent layer branches.
 
 The current publication credential does not allow GitHub Issues access. This versioned roadmap remains the source of task tracking until Issues permission is available. No Issues were created.
+
+## Bounded PHP 8.3 tag projection
+
+The opt-in `php83_strip_tags` stage adds lexical no-allowlist tag removal with explicit quotes, nested delimiters, processing parentheses, comments, XML and doctype transitions. Valid UTF-8 and the 8192-byte/NUL bounds are enforced; the stage cannot expand output or rewrite HTTP. Unknown settings fail startup. Fictional lexical/bound/composition cases and both-media HTTP denial/forwarding/sibling-core checks pass; the complete transport fixture now has 41 groups. Current WordPress tests pass 46 unit and 29 semantics cases; the two opt-in collectors stay ignored normally. Core tests remain 52 passing cases. The diagnostic collector emits a finite 123,764-case input/output fingerprint; collection success is not independent native equivalence. Full site normalization, real workflows, resources, deployment and final acceptance remain unqualified.

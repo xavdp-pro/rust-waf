@@ -224,7 +224,11 @@ fn binding(
     if key != name || raw_key.contains('\0') || output.is_some() {
         return Err(bad("wordpress_ambiguous_input_parameter"));
     }
-    if value.len() > 8192 {
+    // Form percent encoding needs at most three wire bytes for each selected byte.
+    // Bound the raw representation before decoding/allocation, then enforce the
+    // same decoded scalar limit used by headers, MIME values and projections.
+    let wire_limit = if encoded { 3 * 8192 } else { 8192 };
+    if value.len() > wire_limit {
         return Err(bad("wordpress_input_value_limit"));
     }
     let value = if encoded {
@@ -232,6 +236,9 @@ fn binding(
     } else {
         value.into()
     };
+    if value.len() > 8192 {
+        return Err(bad("wordpress_input_value_limit"));
+    }
     if value.contains('\0') {
         return Err(bad("wordpress_ambiguous_input_parameter"));
     }
@@ -319,4 +326,49 @@ async fn scalar_post(
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod binding_size_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_ascii_and_utf8_can_reach_the_same_decoded_limit_as_mime_values() {
+        for (wire, expected) in [
+            ("%41".repeat(8192), "A".repeat(8192)),
+            ("%C3%A9".repeat(4096), "é".repeat(4096)),
+        ] {
+            let mut output = None;
+            binding(&mut output, "selected", &wire, "selected", true).unwrap();
+            assert_eq!(output.as_deref(), Some(expected.as_str()));
+            let mut mime = None;
+            binding(&mut mime, "selected", &expected, "selected", false).unwrap();
+            assert_eq!(mime, output);
+        }
+    }
+
+    #[test]
+    fn raw_and_decoded_oversize_invalid_encoding_and_nul_still_fail_closed() {
+        for wire in [
+            "%41".repeat(8193),
+            "A".repeat(8193),
+            "%00".into(),
+            "%ZZ".into(),
+        ] {
+            let mut output = None;
+            assert!(binding(&mut output, "selected", &wire, "selected", true).is_err());
+            assert!(output.is_none());
+        }
+        let mut output = None;
+        assert!(
+            binding(
+                &mut output,
+                "selected",
+                &"A".repeat(8193),
+                "selected",
+                false
+            )
+            .is_err()
+        );
+    }
 }

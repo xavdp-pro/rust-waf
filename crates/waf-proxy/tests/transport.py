@@ -797,6 +797,25 @@ class Transport(unittest.TestCase):
             self.assertEqual(event['reason'],'rule_match')
             self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
 
+    def test_31_encoded_selected_scalar_limits_preserve_bytes_and_reject_oversize(self):
+        with self.alternate_proxy('encoded-scalar-bound',input_constraint=True) as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for encoded, expected in [(b'%41'*8192,200),(b'%C3%A9'*4096,200),
+                (b'%41'*8193,400),(b'A'*8193,400)]:
+                payload=b'action=fictional_draft&return_url='+encoded
+                before=len(self.received)
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,expected)
+                if expected==200:
+                    self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                    self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                else:
+                    self.assertEqual(len(self.received),before)
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertEqual(event['reason'],'wordpress_input_value_limit')
+                    self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()
         status,_,_=self.request()

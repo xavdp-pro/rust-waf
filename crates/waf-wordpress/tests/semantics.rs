@@ -1212,3 +1212,101 @@ fn input_constraint_invalid_contracts_fail_startup() {
         assert!(Wordpress::from_modules(&modules).is_err());
     }
 }
+
+#[tokio::test]
+async fn input_projection_stages_follow_selection_and_keep_context_private() {
+    let wp = wordpress(json!({"schema_version":1,"input_constraints":[{
+        "id":"projected_input","path":"/wp-admin/admin-ajax.php","actions":["example_draft"],"methods":["POST"],
+        "request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"request_parameter","name":"return_url","stages":[{"kind":"replace","pattern":"^item:","replacement":""}]},
+            {"kind":"header","name":"Referer","stages":[{"kind":"replace","pattern":"^link:","replacement":""}]},
+            {"kind":"request_target"}],
+        "stages":[{"kind":"before_query"},{"kind":"empty_fallback","value":"FORBIDDEN"}],
+        "projection":"raw","reject_pattern":"^FORBIDDEN$","evidence":"fictional-projection-contract"}]}));
+    let headers = [("Referer".into(), "link:FORBIDDEN".into())];
+    for (body, denied) in [
+        ("action=example_draft&return_url=item:safe", false),
+        ("action=example_draft&return_url=item:FORBIDDEN", true),
+        (
+            "action=example_draft&return_url=item:FORBIDDEN%3Fignored%3D1",
+            true,
+        ),
+        ("action=example_draft&return_url=item:", true),
+        ("action=example_draft&return_url=0", true),
+    ] {
+        let context = wp.analyze(input_request("", body, &headers)).await.unwrap();
+        assert_eq!(wp.check(&context, false).is_some(), denied);
+        assert!(
+            !serde_json::to_string(&context)
+                .unwrap()
+                .contains("FORBIDDEN")
+        );
+    }
+    // A selected truthy value projected to empty never restarts header selection.
+    let safe_header = [("Referer".into(), "link:safe".into())];
+    let context = wp
+        .analyze(input_request(
+            "",
+            "action=example_draft&return_url=item:",
+            &safe_header,
+        ))
+        .await
+        .unwrap();
+    assert!(wp.check(&context, false).is_some());
+}
+
+#[tokio::test]
+async fn projection_expansion_returns_an_error_and_preserves_nonselected_source_laziness() {
+    let wp = wordpress(json!({"schema_version":1,"input_constraints":[{
+        "id":"bounded_projection","path":"/wp-admin/admin-ajax.php","actions":["example_draft"],"methods":["POST"],
+        "request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"request_parameter","name":"return_url"},
+            {"kind":"header","name":"Referer","stages":[{"kind":"replace","pattern":"(.)","replacement":"${1}${1}"}]}],
+        "projection":"raw","reject_pattern":"FORBIDDEN","evidence":"fictional-expansion-boundary"}]}));
+    let large_header = [("Referer".into(), "x".repeat(8192))];
+    assert!(
+        wp.analyze(input_request("", "action=example_draft", &large_header))
+            .await
+            .is_err()
+    );
+    assert!(
+        wp.analyze(input_request(
+            "",
+            "action=example_draft&return_url=safe",
+            &large_header
+        ))
+        .await
+        .is_ok()
+    );
+}
+
+#[test]
+fn projection_stage_budget_includes_every_source_and_common_stage() {
+    let mut settings = json!({"schema_version":1,"input_constraints":[{
+        "id":"stage_budget","path":"/wp-admin/admin-ajax.php","actions":[],"methods":["POST"],
+        "request_order":"GP","arg_separator":"&","max_input_vars":1000,
+        "sources":[{"kind":"request_parameter","name":"return_url","stages":vec![json!({"kind":"before_query"});8]},
+            {"kind":"header","name":"Referer","stages":vec![json!({"kind":"before_query"});8]}],
+        "projection":"raw","reject_pattern":"FORBIDDEN","evidence":"fictional-stage-budget"} ]});
+    wordpress(settings.clone());
+    settings["input_constraints"][0]["stages"] = json!([{"kind":"before_query"}]);
+    let modules = BTreeMap::from([
+        (
+            "wordpress".into(),
+            SourcedModule {
+                profile_id: "base".into(),
+                layer: Layer::Application,
+                settings: json!({"schema_version":1}),
+            },
+        ),
+        (
+            "wordpress-site".into(),
+            SourcedModule {
+                profile_id: "site".into(),
+                layer: Layer::Site,
+                settings,
+            },
+        ),
+    ]);
+    assert!(Wordpress::from_modules(&modules).is_err());
+}

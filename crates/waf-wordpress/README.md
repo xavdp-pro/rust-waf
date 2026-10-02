@@ -110,3 +110,30 @@ The ordered sources use PHP scalar truthiness (`""` and `"0"` are falsey). A pre
 Matches produce a pre-backend 403 with reason `wordpress_input_constraint`, policy/profile identity and no input values. Application access/method checks and complete core inspection of forwarded requests remain active; trusted access does not bypass a constraint. Parser ambiguities return 400. This is an explicit application input policy, not an automatically reliable attack classifier: these denials do not start bans, and existing ban/observe contracts are unchanged. Native authentication, nonces, roles and ownership remain mandatory in WordPress.
 
 Five semantic tests and a neutral HTTP group exercise scalar scope, GP/falsey selection, source isolation, selected/header ambiguity, media/file handling, bounds/startup rejection, original-byte forwarding and correlated non-forwarding. A valid constraint cannot suppress an unrelated core match. Actual PHP/helper behavior, plugin virtual patches, artifact resources, Browser, independent effectiveness and matching performance remain separate qualification gates. GP and ampersand declarations are verified deployment prerequisites; other orders/separators fail startup. Unknown multipart binding is a request-wide fail-closed 400, because treating a potentially consumed POST field as absent would invent an unsafe fallback. Overlapping constraints intersect for forwarding; only the first denying policy is reported.
+
+
+## Optional bounded input projection stages
+
+A scoped input constraint and each source may declare optional `stages` arrays. Defaults are empty and preserve existing behavior. Selection uses the original value's PHP truthiness first. Only the selected source's stages run, followed by constraint stages, then the existing `projection` and rejection pattern. A truthy selected source transformed to an empty string does not restart fallback selection. Stages transform only a private inspection copy; the original HTTP bytes and complete core inspection remain unchanged.
+
+Supported explicit stages:
+
+- `replace`: a bounded Rust regular expression `pattern` and `replacement`. Global nonoverlapping matches, including empty-position matches, are replaced. Replacement capture syntax is only `${N}` (including `${0}`); unmatched optional groups contribute empty text, unknown groups and other dollar syntax fail startup. Ordinary dollar characters have no escape syntax in this version. Pattern bytes are capped at 2048, compiled program and DFA cache at 64 KiB each; replacement bytes at 1024 and tokens at 32.
+- `trim`: remove the declared `characters` from both ends. The nonempty character set is at most 64 UTF-8 bytes.
+- `before_query`: take the literal prefix before the first `?` at this point in the pipeline.
+- `form_encode_segments`: split on literal `/`, preserving separators and empty segments. Encode each UTF-8 segment's bytes using form encoding (ASCII alphanumeric and `-_.` retained, space becomes `+`, other bytes become uppercase percent escapes). A bounded `skip_pattern` matches segments that stay unencoded. Required boolean `skip_if_decoding_changes` also preserves a segment containing `+` or a valid `%HH` escape. Required boolean `lowercase_when_escaped` lowercases ASCII in the resulting segment only when it contains such a form escape, including a skipped segment. Invalid escapes alone do not trigger the decoding-change condition. This is a declared transform, not a URL sanitizer or implicit percent-decoding.
+- `empty_fallback`: replace only an empty intermediate value with the nonempty declared `value` (at most 256 bytes). Literal `0` is not empty.
+
+All stages across the constraint and **all** its sources share a maximum of sixteen. Every intermediate result is capped at 8192 UTF-8 bytes; capture replacement appends are checked individually before allocation, and expansion fails with a request error rather than truncating or reverting to the original input. NUL literals in replacement, trim and fallback settings are rejected. Invalid stage kinds/settings, patterns and capture references fail startup. Unknown settings are rejected even on parameterless stages.
+
+For example, this fictional source strips a transport prefix before a shared query projection:
+
+```json
+{
+  "kind": "request_parameter",
+  "name": "return_url",
+  "stages": [{"kind": "replace", "pattern": "^item:", "replacement": ""}]
+}
+```
+
+These are generic declarative primitives. No plugin, route, site prefix, filter, sanitizer or known vulnerability is automatically modeled. Deployers must verify transformation ordering, source-dependent behavior, hook effects, legitimate workflows and the actual sink before activating a policy. Configuration participates in existing versioned fingerprints; projected values remain absent from context/decision serialization. The capability grants no reliable ban confidence. Site policy, actual PHP equivalence, artifact-specific resources, deployment/rollback, Browser and final acceptance remain separate gates.

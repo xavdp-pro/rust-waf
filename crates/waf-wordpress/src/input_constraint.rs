@@ -1,4 +1,5 @@
 //! Site-qualified scalar inputs and explicit PHP GP/header/target fallback selection.
+use super::input_projection::{self, CompiledStage, Stage};
 use super::{Result, bad, clean_path, decode, normalized_key};
 use regex::Regex;
 use serde::Deserialize;
@@ -7,9 +8,20 @@ use std::collections::BTreeSet;
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Source {
-    RequestParameter { name: String },
-    Header { name: String },
-    RequestTarget,
+    RequestParameter {
+        name: String,
+        #[serde(default)]
+        stages: Vec<Stage>,
+    },
+    Header {
+        name: String,
+        #[serde(default)]
+        stages: Vec<Stage>,
+    },
+    RequestTarget {
+        #[serde(default)]
+        stages: Vec<Stage>,
+    },
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,11 +41,31 @@ pub(crate) struct InputConstraint {
     max_input_vars: usize,
     pub(crate) sources: Vec<Source>,
     projection: Projection,
+    #[serde(default)]
+    stages: Vec<Stage>,
     reject_pattern: String,
     evidence: String,
 }
+pub(crate) struct CompiledInput {
+    pattern: Regex,
+    source_stages: Vec<Vec<CompiledStage>>,
+    stages: Vec<CompiledStage>,
+}
+impl Source {
+    fn stages(&self) -> &[Stage] {
+        match self {
+            Self::RequestParameter { stages, .. }
+            | Self::Header { stages, .. }
+            | Self::RequestTarget { stages } => stages,
+        }
+    }
+}
 impl InputConstraint {
-    pub(crate) fn compile(&self, base_path: &str, ids: &mut BTreeSet<String>) -> Result<Regex> {
+    pub(crate) fn compile(
+        &self,
+        base_path: &str,
+        ids: &mut BTreeSet<String>,
+    ) -> Result<CompiledInput> {
         let ident = |v: &str| {
             !v.is_empty()
                 && v.len() <= 96
@@ -81,11 +113,11 @@ impl InputConstraint {
         let mut sources = BTreeSet::new();
         for (index, source) in self.sources.iter().enumerate() {
             let key = match source {
-                Source::RequestParameter { name } if ident(name) => format!("parameter:{name}"),
-                Source::Header { name } if ident(name) => {
+                Source::RequestParameter { name, .. } if ident(name) => format!("parameter:{name}"),
+                Source::Header { name, .. } if ident(name) => {
                     format!("header:{}", name.to_ascii_lowercase())
                 }
-                Source::RequestTarget if index + 1 == self.sources.len() => "target".into(),
+                Source::RequestTarget { .. } if index + 1 == self.sources.len() => "target".into(),
                 _ => return Err(bad("invalid_wordpress_input_source")),
             };
             if !sources.insert(key) {
@@ -99,17 +131,34 @@ impl InputConstraint {
         if pattern.is_match("") {
             return Err(bad("empty_wordpress_input_pattern"));
         }
-        Ok(pattern)
+        if self.stages.len() + self.sources.iter().map(|s| s.stages().len()).sum::<usize>()
+            > input_projection::MAX_STAGES
+        {
+            return Err(bad("wordpress_projection_stage_limit"));
+        }
+        Ok(CompiledInput {
+            pattern,
+            source_stages: self
+                .sources
+                .iter()
+                .map(|s| s.stages().iter().map(Stage::compile).collect())
+                .collect::<Result<_>>()?,
+            stages: self
+                .stages
+                .iter()
+                .map(Stage::compile)
+                .collect::<Result<_>>()?,
+        })
     }
     pub(crate) async fn rejects(
         &self,
-        pattern: &Regex,
+        compiled: &CompiledInput,
         request: &super::Request<'_>,
     ) -> Result<bool> {
         let mut selected = None;
-        for source in &self.sources {
+        for (index, source) in self.sources.iter().enumerate() {
             let value = match source {
-                Source::RequestParameter { name } => {
+                Source::RequestParameter { name, .. } => {
                     let post = if request.wire_method == "POST" {
                         scalar_post(request, name, self.max_input_vars).await?
                     } else {
@@ -122,7 +171,7 @@ impl InputConstraint {
                         scalar_query(request.query, name, self.max_input_vars)?
                     }
                 }
-                Source::Header { name } => {
+                Source::Header { name, .. } => {
                     let values: Vec<_> = request
                         .headers
                         .iter()
@@ -133,7 +182,7 @@ impl InputConstraint {
                     }
                     values.first().map(|(_, value)| value.clone())
                 }
-                Source::RequestTarget => Some(if request.query.is_empty() {
+                Source::RequestTarget { .. } => Some(if request.query.is_empty() {
                     request.path.into()
                 } else {
                     format!("{}?{}", request.path, request.query)
@@ -143,18 +192,22 @@ impl InputConstraint {
                 if value.len() > 8192 || value.contains('\0') {
                     return Err(bad("wordpress_input_value_limit"));
                 }
-                selected = Some(value);
+                selected = Some(input_projection::apply(
+                    &compiled.source_stages[index],
+                    value,
+                )?);
                 break;
             }
         }
         let Some(value) = selected else {
             return Ok(false);
         };
+        let value = input_projection::apply(&compiled.stages, value)?;
         let value = match self.projection {
             Projection::Raw => value.as_str(),
             Projection::BeforeQuery => value.split('?').next().unwrap(),
         };
-        Ok(pattern.is_match(value))
+        Ok(compiled.pattern.is_match(value))
     }
 }
 fn binding(

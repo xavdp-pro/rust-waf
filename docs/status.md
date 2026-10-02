@@ -1,5 +1,9 @@
 # Actual status — 2026-10-01
 
+## Bounded selected-input projections
+
+Opt-in per-source and common projection stages now support bounded regex replacement/captures, trimming, query removal, conditional segment form encoding and empty-result fallback. Original truthiness selects a source before projection; no transformed-empty fallback restart occurs. A sixteen-stage total budget, 8 KiB intermediate limit and 64 KiB regex program/cache bounds apply. Forwarded bytes, full core inspection, body-free provenance and no implicit ban confidence remain unchanged. All 85 Rust semantic cases and 29 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the capability with no blocker identified; a defensive per-stage result guard was added and locally verified. Actual plugin equivalence, site policy, artifact resources, deployment and full acceptance are pending. See [the stage contract](../crates/waf-wordpress/README.md).
+
 ## Scoped selected-input constraints
 
 The generic WordPress adapter now accepts optional evidence-bearing scalar input constraints with exact path/action/wire-method scope, explicit GP bindings, ordered falsey header/target fallbacks and raw/before-query projections. Strict multipart layout must agree with the independent MIME parser. Selected values never enter context/decision serialization; pre-backend denials retain site policy/profile provenance and do not automatically start bans. No site/plugin constraint is enabled by default.

@@ -146,3 +146,24 @@ These are generic declarative primitives. No plugin, route, site prefix, filter,
 The optional `replace.skip_pattern` uses the same nonempty, at-most-2048-byte pattern and 64-KiB regex program/cache bounds as other projection patterns. It matches the complete current stage input once, before replacement. A match skips only that replacement; later stages and the selected-input predicate still apply, as do complete core inspection and original HTTP forwarding. Omitted/null conditions preserve unconditional replacement. The replacement pattern and capture template are validated even for an always-skipped stage; value/NUL and total-stage bounds are unchanged. Conditions are explicit policy data, not automatic trusted exceptions.
 
 Optional `replace.preserve_prefix_pattern` uses the same bounded regex compiler. The first match preserves a prefix only when its start is byte zero; a missing or later-start match preserves no prefix. Replacement runs globally on the remaining suffix: its anchors/captures are relative to that suffix, and empty suffixes can still have zero-width replacements. The complete prefix stays in the projected value, counts toward the same 8192-byte output limit and remains visible to subsequent stages/predicates. `skip_pattern` is evaluated on the full current input before prefix selection. Omitted/null prefix settings retain whole-value replacement. This projection scope does not remove original HTTP bytes or grant a core-inspection exception.
+
+## Optional parameter-value scope
+
+An input constraint may select retained parameter values instead of syntactic root presence:
+
+```json
+"when_parameter_matches": {
+  "name": "command_name",
+  "binding": "php83_form_query_union",
+  "pattern": "(?i)^apply_changes$",
+  "stages": [{"kind": "trim", "characters": " "}]
+}
+```
+
+This guard is mutually exclusive with `when_parameter_present`. It only selects whether the declared input predicate applies; it does not grant an exception, rewrite HTTP, bypass core inspection, alter authentication or increase detection confidence. Omission preserves existing behavior. Pattern/stage contracts are compiled before serving requests.
+
+The explicitly named binding models a bounded subset of 64-bit PHP 8.3 form/query binding. Within each source, scalar duplicates and repeated array keys use last-write resolution; scalar/one-level-array replacements discard the earlier shape. Empty array indices append after the greatest numeric index, including the PHP 8.3 negative-first case. Canonical signed decimal keys become integers; leading zeros, plus signs, negative zero and integer overflow remain text keys. Root aliases normalize leading spaces, dots and spaces; inner keys preserve their spelling. Values from query and form POST are a union, rather than scalar POST precedence. Matching asks whether any retained value, after its declared stages, matches the regex. Map iteration order is not a plugin hook execution order.
+
+Only POST URL-encoded and qualified multipart non-file fields populate the form source. JSON, files and bodies on other methods do not. Names decode once; selected URL-encoded values decode once. All source bindings and all retained value stages are validated even after a match. Selected nested arrays, malformed bracket syntax and NUL names/values fail closed as unqualified. This is not a full PHP parser or automatic WordPress `sanitize_title` implementation. Application filter changes, normalization, route-derived values and actual dispatcher behavior require independent site qualification.
+
+Bounds per source: 128 retained array entries, 65,536 retained key/value bytes, selected keys at most 512 bytes and values at most 8,192 decoded bytes (24,576 URL-encoded wire bytes). Numeric keys count eight bytes toward storage. The existing `max_input_vars` bounds encountered query/form pairs; multipart files do not count as form variables. Append overflow fails closed. The guard permits at most 16 bounded projection stages, separate from the selected-input stage budget. Names are 1–96 ASCII alphanumeric/underscore/hyphen bytes, patterns are 1–2,048 bytes, and regex compilation uses 64 KiB size/DFA bounds. An empty-string-matching regex can select a present empty value; absent parameters have no values to match.

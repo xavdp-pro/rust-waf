@@ -42,3 +42,7 @@ Show traffic/method families, rule/layer decisions, errors, latency/overhead, pr
 Keep upstream protection unchanged and avoid per-request/per-detection Cloudflare API calls. Behind a tunnel, visitor identity is verified HTTP metadata; host packet filtering cannot filter that identity inside tunnel packets. Plan bounded local temporary lists and early Nginx rejection after reliable detection. This reduces full inspection/backend work but not tunnel transit. A direct-ingress adapter may use expiring packet-filter sets for actual network sources.
 
 Friend IPs and infrastructure are excluded from automatic bans; a single 405 or ambiguous event is not sufficient to ban a shared address. Application authentication and authorization still apply.
+
+## Explicit parameter-value guards
+
+The WordPress layer can scope an input predicate to a bounded declared form/query binding union and per-value projections. This is a selector, not an exception or an automatic application dispatcher. Core inspection and original wire bytes remain independent. Installed applications must qualify normalization and hook effects before adopting this selector; full PHP parsing and WordPress sanitizer equivalence are not implied. See the [exact contract](../crates/waf-wordpress/README.md#optional-parameter-value-scope).

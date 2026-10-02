@@ -932,6 +932,40 @@ class Transport(unittest.TestCase):
                         self.assertFalse(event['backend_attempted'])
                         self.assertEqual(event['reason'],'wordpress_projection_value_limit' if expected==400 else 'rule_match' if extra else 'wordpress_input_constraint')
 
+    def test_43_php83_closed_key_suffixes_and_whitespace_append_keep_wire_and_scope(self):
+        cases=[
+            ([('command_name[k]tail','apply_changes')],403),
+            ([('command_name[k]tail[x]','apply_changes')],403),
+            ([('command_name[k]]','apply_changes')],403),
+            ([('command_name[a[b]','apply_changes')],403),
+            ([('command_name[ ]','apply_changes'),('command_name[0]','noop')],200),
+            ([('command_name[  ]','apply_changes'),('command_name[0]','noop')],403),
+            ([('command_name[k]tail','apply_changes'),('command_name[k]','noop')],200),
+        ]
+        with self.alternate_proxy('php83-key-suffix',input_constraint='parameter-match') as (path,events):
+            for media in ['query','form','multipart']:
+                for fields,expected in cases:
+                    target='/FORBIDDEN';payload=b''
+                    if media=='query':
+                        target+='?'+urllib.parse.urlencode(fields)
+                        content_type='application/x-www-form-urlencoded'
+                    elif media=='form':
+                        payload=urllib.parse.urlencode(fields).encode()
+                        content_type='application/x-www-form-urlencoded'
+                    else:
+                        payload=(''.join('--keys\r\nContent-Disposition: form-data; name="'+name+'"\r\n\r\n'+item+'\r\n' for name,item in fields)+'--keys--\r\n').encode()
+                        content_type='multipart/form-data; boundary=keys'
+                    before=len(self.received)
+                    status,headers,body=self.request(path=target,body=payload,headers={'Content-Type':content_type},socket_path=path)
+                    self.assertEqual(status,expected);self.assertEqual(len(self.received),before+(expected==200))
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertFalse(event['ban_started'])
+                    if expected==200:
+                        self.assertEqual(body,payload);self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                        self.assertEqual(self.received[-1]['id'],headers['x-request-id']);self.assertEqual(self.received[-1]['path'],target)
+                    else:
+                        self.assertFalse(event['backend_attempted']);self.assertEqual(event['reason'],'wordpress_input_constraint')
+
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):
             route='/wp-admin/admin-ajax.php'

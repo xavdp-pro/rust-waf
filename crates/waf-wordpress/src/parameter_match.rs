@@ -48,13 +48,28 @@ impl Values {
             return Err(bad("wordpress_unqualified_match_parameter"));
         }
         let key = if let Some((_, tail)) = raw_key.split_once('[') {
-            let inner = tail
-                .strip_suffix(']')
+            let (inner, suffix) = tail
+                .split_once(']')
                 .ok_or_else(|| bad("wordpress_unqualified_match_parameter"))?;
-            if inner.contains(['[', ']']) {
+            // PHP continues nesting only at an immediately following '['.
+            // Other suffix bytes are ignored; '[' inside a closed key is literal.
+            if suffix.starts_with('[') {
                 return Err(bad("wordpress_unqualified_match_parameter"));
             }
-            Some(inner)
+            // PHP treats a single C-whitespace character as an append key,
+            // while two whitespace characters remain a literal text key.
+            Some(
+                if inner.len() == 1
+                    && matches!(
+                        inner.as_bytes()[0],
+                        b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c
+                    )
+                {
+                    ""
+                } else {
+                    inner
+                },
+            )
         } else {
             None
         };
@@ -324,6 +339,79 @@ mod tests {
         );
     }
     #[test]
+    fn closed_keys_ignore_suffixes_and_single_c_whitespace_appends() {
+        for key in [
+            "command_name[k]tail",
+            "command_name[k]tail[x]",
+            "command_name[k]]",
+            "command_name[a[b]",
+        ] {
+            let mut values = Values::default();
+            values
+                .bind(key, "apply_changes", "command_name", false)
+                .unwrap();
+            assert_eq!(values.into_values(), vec!["apply_changes"]);
+        }
+        let mut values = Values::default();
+        values
+            .bind(
+                "command_name[k]tail",
+                "apply_changes",
+                "command_name",
+                false,
+            )
+            .unwrap();
+        values
+            .bind("command_name[k]", "noop", "command_name", false)
+            .unwrap();
+        assert_eq!(values.into_values(), vec!["noop"]);
+        for whitespace in [' ', '\t', '\n', '\r', '\u{b}', '\u{c}'] {
+            let mut values = Values::default();
+            values
+                .bind(
+                    &format!("command_name[{whitespace}]tail"),
+                    "apply_changes",
+                    "command_name",
+                    false,
+                )
+                .unwrap();
+            values
+                .bind("command_name[0]", "noop", "command_name", false)
+                .unwrap();
+            assert_eq!(values.into_values(), vec!["noop"]);
+        }
+        for key in ["command_name[  ]", "command_name[\t ]", "command_name[é]"] {
+            let mut values = Values::default();
+            values
+                .bind(key, "apply_changes", "command_name", false)
+                .unwrap();
+            values
+                .bind("command_name[0]", "noop", "command_name", false)
+                .unwrap();
+            assert_eq!(values.into_values(), vec!["noop", "apply_changes"]);
+        }
+        assert!(
+            Values::default()
+                .bind("command_name[k][nested]", "x", "command_name", false)
+                .is_err()
+        );
+        assert!(
+            Values::default()
+                .bind(
+                    &format!("command_name[k]{}", "x".repeat(512)),
+                    "x",
+                    "command_name",
+                    false
+                )
+                .is_err()
+        );
+        assert!(
+            Values::default()
+                .bind("command_name[k]tail\0ignored", "x", "command_name", false)
+                .is_err()
+        );
+    }
+    #[test]
     fn php83_integer_keys_and_negative_append_are_explicit() {
         let mut result = Values::default();
         result
@@ -368,7 +456,6 @@ mod tests {
     fn selected_binding_syntax_and_storage_limits_fail_closed() {
         for key in [
             "command_name[a][b]",
-            "command_name[k]tail",
             "command_name[",
             "command_name\0suffix",
         ] {

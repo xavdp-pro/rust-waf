@@ -1,5 +1,9 @@
 # Public roadmap
 
+## Bounded selected-input projections
+
+Opt-in per-source and common projection stages now support bounded regex replacement/captures, trimming, query removal, conditional segment form encoding and empty-result fallback. Original truthiness selects a source before projection; no transformed-empty fallback restart occurs. A sixteen-stage total budget, 8 KiB intermediate limit and 64 KiB regex program/cache bounds apply. Forwarded bytes, full core inspection, body-free provenance and no implicit ban confidence remain unchanged. All 85 Rust semantic cases and 29 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the capability with no blocker identified; a defensive per-stage result guard was added and locally verified. Actual plugin equivalence, site policy, artifact resources, deployment and full acceptance are pending. See [the stage contract](../crates/waf-wordpress/README.md).
+
 ## Step 01 — Contracts and composition
 
 Profile composition is implemented with nine passing integration tests; schema-v1 body-free decision records are implemented with the proxy. Define profile/event formats, inheritance, versions, explicit exceptions, and invariants. Acceptance: deterministic composition, meaningful tests, rejection of cyclic/ambiguous configuration, and traceable exceptions that cannot silently weaken core invariants.

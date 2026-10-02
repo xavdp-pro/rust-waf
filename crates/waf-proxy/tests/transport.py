@@ -200,6 +200,16 @@ class Transport(unittest.TestCase):
                     'methods':['GET','POST'],'request_order':'GP','arg_separator':'&','max_input_vars':1000,
                     'sources':[{'kind':'request_parameter','name':'return_url'},{'kind':'header','name':'Referer'},{'kind':'request_target'}],
                     'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
+                if input_constraint == 'projection':
+                    constraint=site['modules'][0]['settings']['input_constraints'][0]
+                    constraint['projection']='raw'
+                    constraint['sources'][0]['stages']=[{'kind':'replace','pattern':'^item:','replacement':''}]
+                    constraint['sources'][1]['stages']=[{'kind':'replace','pattern':'^link:','replacement':''}]
+                    constraint['stages']=[{'kind':'replace','pattern':'[ ]','replacement':'%20'},
+                        {'kind':'form_encode_segments','skip_pattern':'[~]','skip_if_decoding_changes':True,'lowercase_when_escaped':False},
+                        {'kind':'before_query'}]
+                    constraint['reject_pattern']='MARK!'
+
             site_path=self.tmp/(name+'-site.json');site_path.write_text(json.dumps(site))
             config['profiles'][2]=str(site_path)
         config_path=self.tmp/(name+'-config.json');config_path.write_text(json.dumps(config))
@@ -699,6 +709,46 @@ class Transport(unittest.TestCase):
             # Repeated input denials have no implicit confidence/ban promotion.
             status,_,_=self.request(path='/wp-admin/admin-ajax.php',body=b'action=fictional_draft&return_url=/safe',headers=form,socket_path=path)
             self.assertEqual(status,200)
+
+    def test_28_projected_input_decisions_keep_original_bytes_and_complete_core_inspection(self):
+        with self.alternate_proxy('projected-input',input_constraint='projection') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for payload in [b'action=fictional_draft&return_url=item:MARK!',
+                            b'action=fictional_draft&return_url=item:safe%3Fq%3DMARK!',
+                            b'action=fictional_draft&return_url=item:safe&body=MARK!']:
+                before=len(self.received)
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,200);self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+            cases=[(b'action=fictional_draft&return_url=item:MARK!~',form,403),
+                (b'action=fictional_draft&return_url=item:MARK!%20',form,403),
+                (b'action=fictional_draft&return_url=0',{**form,'Referer':'link:MARK!~'},403),
+                (b'action=fictional_draft&return_url=item:safe&body=forbidden-sentinel',form,403),
+                (b'action=fictional_draft&return_url='+b'!'*3000,form,400)]
+            for payload,extra,expected in cases:
+                before=len(self.received)
+                status,headers,_=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=extra,socket_path=path)
+                self.assertEqual(status,expected);self.assertEqual(len(self.received),before)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+                self.assertNotIn('MARK!',json.dumps(event))
+                if expected==403:
+                    self.assertEqual(event['reason'],'rule_match' if b'forbidden-sentinel' in payload else 'wordpress_input_constraint')
+
+            # Projection also consumes literal MIME text without rewriting forwarded multipart bytes.
+            for value,expected in [(b'item:MARK!',200),(b'item:MARK!~',403)]:
+                payload=b'--projected\r\nContent-Disposition: form-data; name="action"\r\n\r\nfictional_draft\r\n--projected\r\nContent-Disposition: form-data; name="return_url"\r\n\r\n'+value+b'\r\n--projected--\r\n'
+                before=len(self.received)
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers={'Content-Type':'multipart/form-data; boundary=projected'},socket_path=path)
+                self.assertEqual(status,expected)
+                if expected==200:
+                    self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                    self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                else:
+                    self.assertEqual(len(self.received),before)
+                    event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                    self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
 
     def test_99_backend_outage_fails_closed(self):
         self.backend.shutdown();self.backend.server_close()

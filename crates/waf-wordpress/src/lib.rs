@@ -1,9 +1,10 @@
 //! WordPress semantics, separate from the application-independent shared engine.
 mod form_consumer;
 mod input_constraint;
+mod input_projection;
 use bytes::Bytes;
 use form_consumer::FormConsumer;
-use input_constraint::InputConstraint;
+use input_constraint::{CompiledInput, InputConstraint};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,7 +84,7 @@ impl Default for Site {
 pub struct Wordpress {
     site: Site,
     rules: Vec<Regex>,
-    input_patterns: Vec<Regex>,
+    input_patterns: Vec<CompiledInput>,
     pub profile_id: String,
     site_profile_id: Option<String>,
 }

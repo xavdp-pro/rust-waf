@@ -203,6 +203,11 @@ class Transport(unittest.TestCase):
                 if input_constraint in ['prefix-presence','root-presence']:
                     constraint=site['modules'][0]['settings']['input_constraints'][0]
                     constraint.update(path='/' if input_constraint == 'root-presence' else '/articles',path_match='prefix',when_parameter_present='command_name',actions=[],sources=[{'kind':'request_target'}])
+                if input_constraint == 'parameter-match':
+                    constraint=site['modules'][0]['settings']['input_constraints'][0]
+                    constraint.update(path='/',path_match='prefix',actions=[],sources=[{'kind':'request_target'}],
+                        when_parameter_matches={'name':'command_name','binding':'php83_form_query_union',
+                            'pattern':'(?i)^apply_changes$','stages':[{'kind':'trim','characters':' '}]})
                 if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
                 if input_constraint == 'preserved-prefix':
@@ -718,6 +723,54 @@ class Transport(unittest.TestCase):
             self.assertEqual(status,403);self.assertEqual(len(self.received),before)
             event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
             self.assertEqual(event['reason'],'wordpress_input_constraint');self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
+    def test_36_value_guard_preserves_bytes_core_inspection_and_backend_denials(self):
+        with self.alternate_proxy('parameter-match',input_constraint='parameter-match') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            cases=[
+                ('/articles/FORBIDDEN',b'command_name=apply_changes&command_name=noop',form,200),
+                ('/articles/FORBIDDEN',b'command_name=noop&command_name=apply_changes',form,403),
+                ('/articles/FORBIDDEN',b'command_name=apply_changes&command_name[]=noop',form,200),
+                ('/articles/FORBIDDEN',b'command_name[]=apply_changes&command_name=noop',form,200),
+                ('/articles/FORBIDDEN',b'command_name[01]=apply_changes&command_name[1]=noop',form,403),
+                ('/articles/FORBIDDEN',b'command_name[k]=apply_changes&command_name[k]=noop',form,200),
+                ('/articles/FORBIDDEN?command_name=apply_changes',b'command_name=',form,403),
+                ('/outside/FORBIDDEN',b'+command.name=+APPLY_CHANGES+',form,403),
+                ('/articles/FORBIDDEN',b'{"command_name":"apply_changes"}',{'Content-Type':'application/json'},200),
+                ('/articles/safe?search=FORBIDDEN',b'command_name=apply_changes',form,200),
+                ('/articles/FORBIDDEN?command_name=apply_changes',b'command_name[a][b]=noop',form,400),
+                ('/articles/FORBIDDEN',b'command_name%00suffix=apply_changes',form,400),
+                ('/articles/FORBIDDEN',b'command_name=noop&other=forbidden-sentinel',form,403),
+            ]
+            for parts,expected in [
+                ([('command_name','apply_changes'),('command_name','noop')],200),
+                ([('command_name[]','apply_changes'),('command_name[]','noop')],403),
+            ]:
+                payload=''.join('--value-boundary\r\nContent-Disposition: form-data; name="'+name+'"\r\n\r\n'+value+'\r\n' for name,value in parts)+'--value-boundary--\r\n'
+                cases.append(('/articles/FORBIDDEN',payload.encode(),{'Content-Type':'multipart/form-data; boundary=value-boundary'},expected))
+            cases.append(('/articles/FORBIDDEN?command_name=apply_changes',b'broken',{'Content-Type':'multipart/form-data; boundary=value-boundary'},400))
+            before=len(self.received)
+            status,headers,_=self.request(method='GET',path='/outside/FORBIDDEN?command_name=apply_changes',body=b'',socket_path=path)
+            self.assertEqual(status,403);self.assertEqual(len(self.received),before)
+            event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+            self.assertEqual(event['reason'],'wordpress_input_constraint');self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+            for route,payload,extra,expected in cases:
+                before=len(self.received)
+                status,headers,body=self.request(path=route,body=payload,headers=extra,socket_path=path)
+                self.assertEqual(status,expected,(route,payload))
+                self.assertEqual(len(self.received),before+(expected==200))
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['ban_started'])
+                if expected==200:
+                    self.assertEqual(body,payload)
+                    self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(self.received[-1]['path'],route)
+                    self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                    self.assertTrue(event['backend_attempted'])
+                else:
+                    self.assertFalse(event['backend_attempted'])
+                    if expected==403:
+                        self.assertEqual(event['reason'],'rule_match' if b'forbidden-sentinel' in payload else 'wordpress_input_constraint')
 
     def test_27_scoped_inputs_deny_before_backend_and_preserve_legitimate_bytes(self):
         with self.alternate_proxy('scoped-input',input_constraint=True) as (path,events):

@@ -1,5 +1,6 @@
 //! Site-qualified scalar inputs and explicit PHP GP/header/target fallback selection.
 use super::input_projection::{self, CompiledStage, Stage};
+use super::parameter_match::{CompiledMatch, ParameterMatch};
 use super::{Result, bad, clean_path, decode, normalized_key};
 use regex::Regex;
 use serde::Deserialize;
@@ -45,6 +46,8 @@ pub(crate) struct InputConstraint {
     path_match: PathMatch,
     #[serde(default)]
     when_parameter_present: Option<String>,
+    #[serde(default)]
+    when_parameter_matches: Option<ParameterMatch>,
     pub(crate) actions: Vec<String>,
     pub(crate) methods: Vec<String>,
     request_order: String,
@@ -59,6 +62,7 @@ pub(crate) struct InputConstraint {
 }
 pub(crate) struct CompiledInput {
     pattern: Regex,
+    parameter_match: Option<CompiledMatch>,
     source_stages: Vec<Vec<CompiledStage>>,
     stages: Vec<CompiledStage>,
 }
@@ -101,7 +105,8 @@ impl InputConstraint {
                 .id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
-        if !policy_id
+        if (self.when_parameter_present.is_some() && self.when_parameter_matches.is_some())
+            || !policy_id
             || !ids.insert(self.id.clone())
             || self
                 .when_parameter_present
@@ -169,6 +174,11 @@ impl InputConstraint {
             return Err(bad("wordpress_projection_stage_limit"));
         }
         Ok(CompiledInput {
+            parameter_match: self
+                .when_parameter_matches
+                .as_ref()
+                .map(ParameterMatch::compile)
+                .transpose()?,
             pattern,
             source_stages: self
                 .sources
@@ -187,6 +197,16 @@ impl InputConstraint {
         compiled: &CompiledInput,
         request: &super::Request<'_>,
     ) -> Result<bool> {
+        if let (Some(guard), Some(compiled_guard)) =
+            (&self.when_parameter_matches, &compiled.parameter_match)
+        {
+            if !guard
+                .matches(compiled_guard, request, self.max_input_vars)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
         if let Some(name) = &self.when_parameter_present {
             // Presence is a union of form POST and query bindings, including arrays,
             // duplicates and falsey values. It does not resolve a plugin action value.
@@ -489,6 +509,27 @@ mod scope_tests {
         r.path_match = PathMatch::Exact;
         assert!(!r.matches_path("/app/articles/child/"));
     }
+    #[test]
+    fn presence_and_value_match_are_exclusive_and_invalid_matches_fail_startup() {
+        let mut r = rule();
+        r.when_parameter_matches = Some(
+            serde_json::from_value(serde_json::json!({
+                "name":"command_name","binding":"php83_form_query_union","pattern":"^apply_changes$"
+            }))
+            .unwrap(),
+        );
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+        r.when_parameter_present = None;
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_ok());
+        r.when_parameter_matches = Some(
+            serde_json::from_value(serde_json::json!({
+                "name":"command_name","binding":"unsupported","pattern":"^apply_changes$"
+            }))
+            .unwrap(),
+        );
+        assert!(r.compile("/app/", &mut BTreeSet::new()).is_err());
+    }
+
     #[test]
     fn presence_includes_falsey_duplicate_array_and_php_alias_bindings() {
         for input in [

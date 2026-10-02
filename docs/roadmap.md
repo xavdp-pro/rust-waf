@@ -1,5 +1,11 @@
 # Public roadmap
 
+## Equal decoded scalar bounds across encoded and literal media
+
+Selected form/query values now have an independently bounded 24,576-byte wire representation before decoding and the existing 8192-byte decoded UTF-8 scalar cap afterward. Literal MIME/header/target and projection bounds stay at 8192 bytes. This permits fully percent-encoded values at the scalar limit without lifting the decoded budget. Invalid encoding, NUL, oversized wire/decoded values and existing GP/ambiguity behavior still fail closed.
+
+All 92 Rust semantic cases and 32 correlated neutral HTTP groups pass with clippy/formatting, foundation/scorer and both statistics checks. ASCII and multibyte UTF-8 witnesses preserve original bytes/backend hashes at the bound; wire/decoded oversized controls have no backend attempt or ban. Cursor reviewed the change and ran both binding-size unit cases with no merge blocker. Application parser/workflow and exact-artifact resources/deployment remain separate gates; this does not establish site protection or full acceptance.
+
 ## Conditional sequence removal
 
 The optional `remove_sequences.skip_pattern` is compiled with the existing bounded regex limits and matches the current complete stage input once. A match skips only deletion; later projections, the selected-input predicate, full core inspection, original HTTP forwarding and value/privacy limits remain active. Omitted/null settings preserve unconditional deletion. Invalid patterns and ambiguous sequence sets fail startup.

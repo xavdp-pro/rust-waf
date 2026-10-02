@@ -202,6 +202,8 @@ class Transport(unittest.TestCase):
                     'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
                 if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
+                if input_constraint == 'conditional-replace':
+                    site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'replace','pattern':'x','replacement':'','skip_pattern':'(?i)^keep:'}]
                 if input_constraint == 'conditional-sequences':
                     site['modules'][0]['settings']['input_constraints'][0]['stages'][0]['skip_pattern']='(?i)^keep:'
                 if input_constraint == 'projection':
@@ -796,6 +798,25 @@ class Transport(unittest.TestCase):
             event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
             self.assertEqual(event['reason'],'rule_match')
             self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
+    def test_32_replace_skip_keeps_predicate_and_complete_wire_inspection(self):
+        with self.alternate_proxy('conditional-replace-input',input_constraint='conditional-replace') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for value,extra,expected in [(b'KEEP:FOxRBIDDEN',b'',200),(b'other:FOxRBIDDEN',b'',403),
+                (b'keep:FORBIDDEN',b'',403),(b'keep:safe',b'&other=forbidden-sentinel',403)]:
+                before=len(self.received)
+                payload=b'action=fictional_draft&return_url='+value+extra
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,expected)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['ban_started'])
+                if expected==200:
+                    self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                    self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                else:
+                    self.assertEqual(len(self.received),before);self.assertFalse(event['backend_attempted'])
+                    self.assertEqual(event['reason'],'rule_match' if extra else 'wordpress_input_constraint')
 
     def test_31_encoded_selected_scalar_limits_preserve_bytes_and_reject_oversize(self):
         with self.alternate_proxy('encoded-scalar-bound',input_constraint=True) as (path,events):

@@ -12,6 +12,8 @@ pub(crate) enum Stage {
     Replace {
         pattern: String,
         replacement: String,
+        #[serde(default)]
+        skip_pattern: Option<String>,
     },
     RemoveSequences {
         sequences: Vec<String>,
@@ -39,6 +41,7 @@ pub(crate) enum CompiledStage {
     Replace {
         pattern: Regex,
         tokens: Vec<Token>,
+        skip: Option<Regex>,
     },
     RemoveSequences {
         sequences: Vec<String>,
@@ -70,6 +73,7 @@ impl Stage {
             Self::Replace {
                 pattern: source,
                 replacement,
+                skip_pattern,
             } => {
                 let pattern = pattern(source)?;
                 if replacement.len() > 1024 || replacement.contains('\0') {
@@ -104,7 +108,11 @@ impl Stage {
                 if tokens.len() > 32 {
                     return Err(bad("invalid_wordpress_projection_replacement"));
                 }
-                CompiledStage::Replace { pattern, tokens }
+                CompiledStage::Replace {
+                    pattern,
+                    tokens,
+                    skip: skip_pattern.as_deref().map(self::pattern).transpose()?,
+                }
             }
             Self::RemoveSequences {
                 sequences,
@@ -183,26 +191,34 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
     }
     for stage in stages {
         value = match stage {
-            CompiledStage::Replace { pattern, tokens } => {
-                let mut out = String::new();
-                let mut end = 0;
-                for captures in pattern.captures_iter(&value) {
-                    let matched = captures.get(0).unwrap();
-                    append(&mut out, &value[end..matched.start()])?;
-                    for token in tokens {
-                        match token {
-                            Token::Literal(text) => append(&mut out, text)?,
-                            Token::Group(index) => {
-                                if let Some(part) = captures.get(*index) {
-                                    append(&mut out, part.as_str())?;
+            CompiledStage::Replace {
+                pattern,
+                tokens,
+                skip,
+            } => {
+                if skip.as_ref().is_some_and(|guard| guard.is_match(&value)) {
+                    value
+                } else {
+                    let mut out = String::new();
+                    let mut end = 0;
+                    for captures in pattern.captures_iter(&value) {
+                        let matched = captures.get(0).unwrap();
+                        append(&mut out, &value[end..matched.start()])?;
+                        for token in tokens {
+                            match token {
+                                Token::Literal(text) => append(&mut out, text)?,
+                                Token::Group(index) => {
+                                    if let Some(part) = captures.get(*index) {
+                                        append(&mut out, part.as_str())?;
+                                    }
                                 }
                             }
                         }
+                        end = matched.end();
                     }
-                    end = matched.end();
+                    append(&mut out, &value[end..])?;
+                    out
                 }
-                append(&mut out, &value[end..])?;
-                out
             }
             CompiledStage::RemoveSequences { sequences, skip } => {
                 // A match skips this projection stage only. Selection, later stages,
@@ -287,6 +303,68 @@ mod tests {
             .map(Stage::compile)
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
+    }
+    #[test]
+    fn replace_skip_is_current_stage_local_and_preserves_later_transforms() {
+        let stages = json!([
+            {"kind":"replace","pattern":"x","replacement":"y","skip_pattern":"^keep:"},
+            {"kind":"replace","pattern":"x$","replacement":"z"}
+        ]);
+        assert_eq!(project(stages.clone(), "keep:x").unwrap(), "keep:z");
+        assert_eq!(project(stages, "other:x").unwrap(), "other:y");
+        assert_eq!(
+            project(
+                json!([
+                    {"kind":"replace","pattern":"^prefix:","replacement":""},
+                    {"kind":"replace","pattern":"x","replacement":"y","skip_pattern":"^keep:"}
+                ]),
+                "prefix:keep:x"
+            )
+            .unwrap(),
+            "keep:x"
+        );
+        for skip in [serde_json::Value::Null, json!("never")] {
+            assert_eq!(
+                project(
+                    json!([{"kind":"replace","pattern":"x","replacement":"y","skip_pattern":skip}]),
+                    "x"
+                )
+                .unwrap(),
+                "y"
+            );
+        }
+    }
+    #[test]
+    fn replace_skip_does_not_bypass_validation_or_value_bounds() {
+        for skip in ["", "(", &"a".repeat(2049)] {
+            assert!(
+                project(
+                    json!([{"kind":"replace","pattern":"x","replacement":"y","skip_pattern":skip}]),
+                    "x"
+                )
+                .is_err()
+            );
+        }
+        for (pattern, replacement) in [("(", "y"), ("x", "$bad")] {
+            assert!(project(json!([{"kind":"replace","pattern":pattern,"replacement":replacement,"skip_pattern":".*"}]), "x").is_err());
+        }
+        assert!(
+            project(
+                json!([{"kind":"replace","pattern":"x","replacement":"y","skip_pattern":".*"}]),
+                &"x".repeat(8193)
+            )
+            .is_err()
+        );
+        assert!(
+            project(
+                json!([
+                    {"kind":"replace","pattern":"x","replacement":"y","skip_pattern":".*"},
+                    {"kind":"replace","pattern":"x","replacement":"yy"}
+                ]),
+                &"x".repeat(8192)
+            )
+            .is_err()
+        );
     }
     #[test]
     fn captures_unicode_zero_width_and_order_preserve_exact_projection() {

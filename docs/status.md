@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Conditional bounded replacement
+
+The optional `replace.skip_pattern` matches the complete current stage input once and skips only that replacement. Omitted/null conditions retain unconditional replacement. Conditions use the existing bounded regex compiler; replacement patterns and capture templates are validated even when always skipped. Later stages, the predicate, value/NUL limits, full core inspection, original bytes and ban-confidence rules remain active.
+
+All 94 Rust semantic cases and 33 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Tests cover current-input matching, later-stage execution, eager startup validation, input/output bounds, exact HTTP body/hash/ID forwarding, predicate denial and sibling-core denial without backend execution or bans. Cursor independently reviewed the change and ran both replacement unit tests with no merge blocker. Its documentation consistency suggestion was applied afterward. This generic capability does not establish application equivalence, resource qualification, deployment or site protection.
+
 ## Equal decoded scalar bounds across encoded and literal media
 
 Selected form/query values now have an independently bounded 24,576-byte wire representation before decoding and the existing 8192-byte decoded UTF-8 scalar cap afterward. Literal MIME/header/target and projection bounds stay at 8192 bytes. This permits fully percent-encoded values at the scalar limit without lifting the decoded budget. Invalid encoding, NUL, oversized wire/decoded values and existing GP/ambiguity behavior still fail closed.

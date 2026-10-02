@@ -115,7 +115,7 @@ impl InputConstraint {
                     } else {
                         None
                     };
-                    // A falsey POST binding overrides GET first, then activates the next source.
+                    // Any present POST binding suppresses GET; falsey values advance to the next source.
                     if post.is_some() {
                         post
                     } else {

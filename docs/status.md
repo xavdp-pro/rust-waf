@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Versioned canonical Unicode composition
+
+The optional `unicode_nfc` stage requires explicit `unicode_version: 16.0.0`, pins `unicode-normalization` 0.1.24 and checks its table version at startup. It performs canonical composition only, with existing UTF-8/NUL/input bounds and streamed output expansion errors. No automatic accent removal, compatibility normalization, case folding or WordPress filter behavior is inferred. See the [exact contract](../crates/waf-wordpress/README.md#explicit-unicode-nfc-version).
+
+All 115 Rust semantic cases plus the transport wrapper and 38 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and statistics checks. Canonical composition/reordering/Hangul, compatibility preservation, stage order, invalid/missing versions, unknown fields and expansion limits are covered. HTTP normalization predicates and expansion/core denials have no backend attempt or ban, while authorized requests retain original hashes. Independent Cursor Agent review found no concrete blocker and independently ran both NFC unit cases. Library iterator peak work/memory, native application equivalence, resources and deployment acceptance remain unqualified.
+
 ## Bounded literal translation candidate
 
 The optional `translate` projection compiles explicit mappings into a bounded byte trie and applies longest-key, one-pass replacements independently of configuration order. Duplicate/empty/NUL/oversized mappings fail startup; output expansion fails rather than truncating. The exact [contract](../crates/waf-wordpress/README.md#bounded-one-pass-literal-translation) includes table/input/output bounds. No application mappings or automatic WordPress sanitization are embedded.

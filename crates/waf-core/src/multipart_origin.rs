@@ -204,7 +204,8 @@ pub(crate) fn spans(
 }
 
 /// Verify every physical part against the normal MIME parser before assigning origins.
-pub(crate) async fn agrees(
+/// Verify that the borrowed physical layout agrees with the independent MIME parser.
+pub async fn agrees(
     body: bytes::Bytes,
     boundary: &str,
     parts: &[Part<'_>],
@@ -231,7 +232,11 @@ pub(crate) async fn agrees(
             .bytes()
             .await
             .map_err(|_| PolicyError("invalid_multipart".into()))?;
-        agrees &= part.is_some_and(|part| value.as_ref() == &input[part.value.clone()]);
+        agrees &= part.is_some_and(|part| {
+            input
+                .get(part.value.clone())
+                .is_some_and(|expected| value.as_ref() == expected)
+        });
         count += 1;
     }
     Ok(agrees && count == parts.len())
@@ -327,6 +332,9 @@ mod tests {
         assert!(!agrees(body.clone(), "b", &parts, 2).await.unwrap());
         let parts = layout(BODY, "b", 2).unwrap();
         assert!(!agrees(body.clone(), "b", &parts[..1], 2).await.unwrap());
+        let mut invalid = layout(BODY, "b", 2).unwrap();
+        invalid[0].value.end = usize::MAX;
+        assert!(!agrees(body.clone(), "b", &invalid, 2).await.unwrap());
         assert!(agrees(body, "b", &parts, 1).await.is_err());
     }
 }

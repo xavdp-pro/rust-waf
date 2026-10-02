@@ -1,5 +1,11 @@
 # Actual status — 2026-10-01
 
+## Bounded preserved replacement prefix
+
+Optional `replace.preserve_prefix_pattern` preserves the first regex match only when it starts at byte zero, then applies replacement to the remaining suffix with suffix-relative anchors/captures. The complete prefix counts toward the unchanged output bound and remains visible to later stages and the predicate. Full-input skip conditions run first; eager bounded compilation, UTF-8/value/NUL guards, complete core inspection and original HTTP bytes remain unchanged.
+
+All 96 Rust semantic cases and 34 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the change and ran the two prefix unit tests with no blocker. An old pipeline-close fixture initially raised ConnectionResetError; after review it accepts reset as closure while requiring one valid HTTP response and exactly one backend execution. Full suite then passes. These are generic neutral proofs, not application equivalence, artifact resources or deployment acceptance.
+
 ## Conditional bounded replacement
 
 The optional `replace.skip_pattern` matches the complete current stage input once and skips only that replacement. Omitted/null conditions retain unconditional replacement. Conditions use the existing bounded regex compiler; replacement patterns and capture templates are validated even when always skipped. Later stages, the predicate, value/NUL limits, full core inspection, original bytes and ban-confidence rules remain active.

@@ -202,6 +202,8 @@ class Transport(unittest.TestCase):
                     'projection':'before_query','reject_pattern':'FORBIDDEN','evidence':'fictional-scalar-consumer'}]}}]
                 if input_constraint in ['sequences','conditional-sequences']:
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'remove_sequences','sequences':['xy']}]
+                if input_constraint == 'preserved-prefix':
+                    site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'replace','pattern':'x','replacement':'','preserve_prefix_pattern':'^[^:]+:'}]
                 if input_constraint == 'conditional-replace':
                     site['modules'][0]['settings']['input_constraints'][0]['stages']=[{'kind':'replace','pattern':'x','replacement':'','skip_pattern':'(?i)^keep:'}]
                 if input_constraint == 'conditional-sequences':
@@ -287,11 +289,12 @@ class Transport(unittest.TestCase):
         sock.sendall(b'POST /first/ '+base+b'6\r\n\r\nbenign'+b'POST /second/ '+base+b'18\r\n\r\nforbidden-sentinel')
         data=b''
         while True:
-            chunk=sock.recv(8192)
+            try:chunk=sock.recv(8192)
+            except ConnectionResetError:break
             if not chunk:break
             data+=chunk
         sock.close()
-        self.assertIn(b'200',data.split(b'\r\n')[0]);self.assertEqual(len(self.received),before+1)
+        self.assertIn(b'200',data.split(b'\r\n')[0]);self.assertEqual(data.count(b'HTTP/1.1 '),1);self.assertEqual(len(self.received),before+1)
         self.assertEqual(self.received[-1]['path'],'/first/')
     def test_11_header_timeout_never_reaches_backend(self):
         before=len(self.received)
@@ -798,6 +801,25 @@ class Transport(unittest.TestCase):
             event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
             self.assertEqual(event['reason'],'rule_match')
             self.assertFalse(event['backend_attempted']);self.assertFalse(event['ban_started'])
+
+    def test_33_preserved_prefix_keeps_predicate_and_exact_original_bytes(self):
+        with self.alternate_proxy('preserved-prefix-input',input_constraint='preserved-prefix') as (path,events):
+            form={'Content-Type':'application/x-www-form-urlencoded'}
+            for value,extra,expected in [(b'FOxRBIDDEN:safe',b'',200),(b'head:FOxRBIDDEN',b'',403),
+                (b'FORBIDDEN:safe',b'',403),(b'head:safe',b'&other=forbidden-sentinel',403)]:
+                before=len(self.received)
+                payload=b'action=fictional_draft&return_url='+value+extra
+                status,headers,body=self.request(path='/wp-admin/admin-ajax.php',body=payload,headers=form,socket_path=path)
+                self.assertEqual(status,expected)
+                event=next(json.loads(line) for line in events.read_text().splitlines() if json.loads(line)['request_id']==headers['x-request-id'])
+                self.assertFalse(event['ban_started'])
+                if expected==200:
+                    self.assertEqual(body,payload);self.assertEqual(len(self.received),before+1)
+                    self.assertEqual(self.received[-1]['sha256'],hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(self.received[-1]['id'],headers['x-request-id'])
+                else:
+                    self.assertEqual(len(self.received),before);self.assertFalse(event['backend_attempted'])
+                    self.assertEqual(event['reason'],'rule_match' if extra else 'wordpress_input_constraint')
 
     def test_32_replace_skip_keeps_predicate_and_complete_wire_inspection(self):
         with self.alternate_proxy('conditional-replace-input',input_constraint='conditional-replace') as (path,events):

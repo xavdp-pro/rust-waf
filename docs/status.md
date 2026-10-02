@@ -1,5 +1,9 @@
 # Actual status — 2026-10-01
 
+## Recursive literal sequence removal
+
+The optional `remove_sequences` projection reaches the full deletion fixed point using a bounded streaming UTF-8 stack. Startup restricts the literal set to equal-width, nonoverlapping words; empty, duplicate, oversized and ambiguous sets are rejected. Nested inputs through the full 8 KiB value bound are supported without a recursion-depth cutoff. Values and original HTTP bytes remain private/unchanged; no ban confidence is inferred. All 88 Rust semantic cases and 30 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the mechanism and ran the sequence tests with no blocker identified. Actual application equivalence, private policy, artifact resources, deployment and final acceptance remain pending.
+
 ## Bounded selected-input projections
 
 Opt-in per-source and common projection stages now support bounded regex replacement/captures, trimming, query removal, conditional segment form encoding and empty-result fallback. Original truthiness selects a source before projection; no transformed-empty fallback restart occurs. A sixteen-stage total budget, 8 KiB intermediate limit and 64 KiB regex program/cache bounds apply. Forwarded bytes, full core inspection, body-free provenance and no implicit ban confidence remain unchanged. All 85 Rust semantic cases and 29 correlated neutral HTTP groups pass, with clippy/formatting, foundation/scorer and both statistics checks. Cursor independently reviewed the capability with no blocker identified; a defensive per-stage result guard was added and locally verified. Actual plugin equivalence, site policy, artifact resources, deployment and full acceptance are pending. See [the stage contract](../crates/waf-wordpress/README.md).

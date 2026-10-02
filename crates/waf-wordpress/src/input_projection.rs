@@ -1,4 +1,5 @@
 //! Bounded, opt-in projections of one selected application input. Never rewrites HTTP bytes.
+use super::input_lowercase::Lowercase;
 use super::input_translation::{Mapping, Translation};
 use super::{Result, bad};
 use regex::{Regex, RegexBuilder};
@@ -30,6 +31,9 @@ pub(crate) enum Stage {
     BeforeQuery {},
     UriEncode {
         max_output_bytes: usize,
+    },
+    UnicodeLowercase {
+        unicode_version: String,
     },
     UnicodeNfc {
         unicode_version: String,
@@ -64,6 +68,7 @@ pub(crate) enum CompiledStage {
     Trim(String),
     BeforeQuery,
     UriEncode(usize),
+    UnicodeLowercase(Lowercase),
     UnicodeNfc,
     Translate(Translation),
     FormEncodeSegments {
@@ -179,6 +184,9 @@ impl Stage {
                     return Err(bad("invalid_wordpress_uri_output_limit"));
                 }
                 CompiledStage::UriEncode(*max_output_bytes)
+            }
+            Self::UnicodeLowercase { unicode_version } => {
+                CompiledStage::UnicodeLowercase(Lowercase::compile(unicode_version)?)
             }
             Self::UnicodeNfc { unicode_version } => {
                 if unicode_version != "16.0.0"
@@ -317,6 +325,7 @@ pub(crate) fn apply(stages: &[CompiledStage], mut value: String) -> Result<Strin
                 }
                 output
             }
+            CompiledStage::UnicodeLowercase(table) => table.apply(&value)?,
             CompiledStage::UnicodeNfc => {
                 let mut output = String::new();
                 for character in value.nfc() {
@@ -386,6 +395,40 @@ mod tests {
             .map(Stage::compile)
             .collect::<Result<Vec<_>>>()?;
         apply(&compiled, input.into())
+    }
+    #[test]
+    fn lowercase_stage_requires_a_version_and_composes_before_uri_encoding() {
+        for value in [
+            json!({"kind":"unicode_lowercase"}),
+            json!({"kind":"unicode_lowercase","unicode_version":"16.0.0","unknown":true}),
+        ] {
+            assert!(serde_json::from_value::<Stage>(value).is_err());
+        }
+        assert!(
+            project(
+                json!([{"kind":"unicode_lowercase","unicode_version":"17.0.0"}]),
+                "safe"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            project(
+                json!([
+                    {"kind":"unicode_lowercase","unicode_version":"16.0.0"},
+                    {"kind":"uri_encode","max_output_bytes":200}
+                ]),
+                "ΟΣ/İ"
+            )
+            .unwrap(),
+            "%ce%bf%cf%82/i%cc%87"
+        );
+        assert!(
+            project(
+                json!([{"kind":"unicode_lowercase","unicode_version":"16.0.0"}]),
+                &"İ".repeat(2731)
+            )
+            .is_err()
+        );
     }
     #[test]
     fn uri_encoding_preserves_ascii_and_stops_before_a_whole_scalar_overflows() {

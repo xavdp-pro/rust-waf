@@ -1,5 +1,11 @@
 # Public roadmap
 
+## Versioned contextual Unicode lowercase
+
+The opt-in `unicode_lowercase` stage requires an explicit `unicode_version` of 15.0.0 or 16.0.0. Exact mapping and matching context-property dependencies keep casing independent of compiler upgrades and avoid mixing old mappings with newer properties. Bounded property ranges and original-input neighbor context provide final sigma without repeated suffix scans. Expansion errors preserve existing input/output and complete original HTTP inspection/forwarding. See the [contract](../crates/waf-wordpress/README.md#versioned-default-unicode-lowercase).
+
+Local validation passes 123 Rust semantic cases plus the transport wrapper and 40 correlated neutral HTTP groups, with clippy/formatting, foundation/scorer and statistics checks. Five new unit cases cover default casing versus folding, cross-version mapping/context differences, eager contracts, expansion limits, stage composition and 19,531 independent context comparisons. Two-version HTTP fixtures cover both form media, original forwards, no-backend/no-ban denials, sibling core inspection and expansion errors. An initial fixture reused a stale socket name across versions; distinct names correct that collision. Independent Cursor Agent review found no concrete blocker and independently ran all five lowercase tests. The repaired transport wrapper and affected WordPress suite pass; unchanged core cases retain their passing run. Native PHP/extension equivalence, exact artifact resources, private profile activation and deployment/full acceptance remain unqualified. No private behavior or deployment data is included.
+
 ## Bounded URI scalar projection
 
 The opt-in `uri_encode` stage retains ASCII and emits lowercase percent escapes for non-ASCII UTF-8 scalars. Required `max_output_bytes` is 1–8192; it stops before an entire representation exceeds that budget. Input/NUL validation, later stages/predicate, complete original request inspection and byte-exact forwarding remain active. This is an explicit application transform, not an implicit sanitizer. See the [contract](../crates/waf-wordpress/README.md#bounded-uri-scalar-encoding).

@@ -9,7 +9,12 @@ waf-core = { path = "../waf-core" }
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+# Pin the Unicode property tables used by regex for contextual casing.
+regex-syntax.workspace = true
 unicode-normalization.workspace = true
+unicode-case-mapping.workspace = true
+unicode-case-mapping15.workspace = true
+regex-syntax15.workspace = true
 bytes.workspace = true
 multer.workspace = true
 futures-util.workspace = true

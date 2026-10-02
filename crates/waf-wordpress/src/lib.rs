@@ -1,6 +1,7 @@
 //! WordPress semantics, separate from the application-independent shared engine.
 mod form_consumer;
 mod input_constraint;
+mod input_lowercase;
 mod input_projection;
 mod input_translation;
 mod parameter_match;
